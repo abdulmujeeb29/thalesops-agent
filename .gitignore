@@ -1,0 +1,30 @@
+# Binaries
+bin/
+thalesops-agent
+thalesops-agent.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Configuration / Secrets
+.env
+.env.local
+.env.*.local
+
+# Dependency directories (only if you use 'go mod vendor')
+# vendor/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
