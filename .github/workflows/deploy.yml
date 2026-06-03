@@ -1,0 +1,33 @@
+name: Deploy Agent Binaries
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Binaries
+        run: |
+          chmod +x ./build.sh
+          ./build.sh
+
+      - name: Deploy to Staging Server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "build/install.sh,build/releases/*"
+          target: "/home/thalesops-agent"
+          strip_components: 1
