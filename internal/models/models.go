@@ -3,12 +3,14 @@ package models
 type RegisterRequest struct {
 	OSInfo       map[string]string      `json:"os_info"`
 	Capabilities map[string]interface{} `json:"capabilities"`
+	AgentVersion string                 `json:"agent_version,omitempty"`
 }
 
 type HeartbeatRequest struct {
 	OSInfo       map[string]string      `json:"os_info,omitempty"`
 	Capabilities map[string]interface{} `json:"capabilities,omitempty"`
 	Metrics      map[string]interface{} `json:"metrics,omitempty"`
+	AgentVersion string                 `json:"agent_version,omitempty"`
 }
 
 type AgentCommand struct {

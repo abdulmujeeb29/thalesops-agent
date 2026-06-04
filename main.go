@@ -23,6 +23,11 @@ import (
 	"github.com/thalesops/agent/internal/models"
 )
 
+// Version is injected at build time via:
+//   go build -ldflags "-X main.Version=<git-sha>" main.go
+// It defaults to "dev" when built without the flag.
+var Version = "dev"
+
 // inFlight tracks command IDs that are currently executing.
 // Prevents the same command from being picked up and run twice across heartbeats.
 var (
@@ -31,7 +36,7 @@ var (
 )
 
 func main() {
-	fmt.Println("ThalesOps Agent starting...")
+	fmt.Printf("ThalesOps Agent starting... (version: %s)\n", Version)
 
 	cfg := config.LoadConfig()
 	if cfg.ServerID == "" || cfg.AgentToken == "" {
@@ -50,6 +55,7 @@ func main() {
 			"shell":  true,
 			"docker": true,
 		},
+		AgentVersion: Version,
 	})
 
 	currentInterval := time.Duration(cfg.Interval) * time.Second
@@ -182,7 +188,8 @@ func processHeartbeat(client *api.Client, metrics map[string]interface{}, cfg *c
 	fmt.Printf("Heartbeat: %v\n", metrics)
 
 	resp, err := client.Heartbeat(models.HeartbeatRequest{
-		Metrics: metrics,
+		Metrics:      metrics,
+		AgentVersion: Version,
 	})
 	if err != nil {
 		log.Printf("Heartbeat failed: %v", err)
