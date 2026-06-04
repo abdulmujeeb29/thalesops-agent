@@ -12,7 +12,11 @@ import (
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v3/process"
 	"github.com/thalesops/agent/internal/api"
 	"github.com/thalesops/agent/internal/config"
 	"github.com/thalesops/agent/internal/executor"
@@ -97,31 +101,80 @@ func registerWithRetry(client *api.Client, req models.RegisterRequest) {
 	}
 }
 
-// collectMetrics gathers CPU, RAM, and disk usage from the host OS.
+// collectMetrics gathers comprehensive system metrics from the host OS:
+// CPU, RAM, swap, disk, network I/O, load average, uptime, and process count.
 func collectMetrics() map[string]interface{} {
 	metrics := make(map[string]interface{})
 
+	// ── CPU ─────────────────────────────────────────────────────────────────────
 	percent, err := cpu.Percent(time.Second, false)
 	if err == nil && len(percent) > 0 {
 		metrics["cpu_usage"] = fmt.Sprintf("%.1f%%", percent[0])
 	}
-
-	v, err := mem.VirtualMemory()
-	if err == nil {
-		metrics["ram_usage"] = fmt.Sprintf("%.1f%%", v.UsedPercent)
-		metrics["ram_total_mb"] = v.Total / 1024 / 1024
-		metrics["ram_free_mb"] = v.Available / 1024 / 1024
+	if counts, err := cpu.Counts(true); err == nil {
+		metrics["cpu_cores"] = counts
 	}
 
-	d, err := disk.Usage("/")
-	if err == nil {
-		metrics["disk_usage"] = fmt.Sprintf("%.1f%%", d.UsedPercent)
+	// ── RAM ──────────────────────────────────────────────────────────────────────
+	if v, err := mem.VirtualMemory(); err == nil {
+		metrics["ram_usage"]    = fmt.Sprintf("%.1f%%", v.UsedPercent)
+		metrics["ram_total_mb"] = v.Total / 1024 / 1024
+		metrics["ram_used_mb"]  = v.Used / 1024 / 1024
+		metrics["ram_free_mb"]  = v.Available / 1024 / 1024
+	}
+
+	// ── Swap ─────────────────────────────────────────────────────────────────────
+	if s, err := mem.SwapMemory(); err == nil {
+		metrics["swap_total_mb"] = s.Total / 1024 / 1024
+		metrics["swap_used_mb"]  = s.Used / 1024 / 1024
+		metrics["swap_usage"]    = fmt.Sprintf("%.1f%%", s.UsedPercent)
+	}
+
+	// ── Disk ─────────────────────────────────────────────────────────────────────
+	if d, err := disk.Usage("/"); err == nil {
+		metrics["disk_usage"]    = fmt.Sprintf("%.1f%%", d.UsedPercent)
 		metrics["disk_total_gb"] = d.Total / 1024 / 1024 / 1024
-		metrics["disk_free_gb"] = d.Free / 1024 / 1024 / 1024
+		metrics["disk_used_gb"]  = d.Used / 1024 / 1024 / 1024
+		metrics["disk_free_gb"]  = d.Free / 1024 / 1024 / 1024
+	}
+
+	// ── Network I/O ───────────────────────────────────────────────────────────────
+	if netStats, err := net.IOCounters(false); err == nil && len(netStats) > 0 {
+		metrics["net_bytes_sent"]   = netStats[0].BytesSent
+		metrics["net_bytes_recv"]   = netStats[0].BytesRecv
+		metrics["net_packets_sent"] = netStats[0].PacketsSent
+		metrics["net_packets_recv"] = netStats[0].PacketsRecv
+	}
+
+	// ── Load Average ─────────────────────────────────────────────────────────────
+	if l, err := load.Avg(); err == nil {
+		metrics["load_1"]  = fmt.Sprintf("%.2f", l.Load1)
+		metrics["load_5"]  = fmt.Sprintf("%.2f", l.Load5)
+		metrics["load_15"] = fmt.Sprintf("%.2f", l.Load15)
+	}
+
+	// ── Uptime & Host Info ────────────────────────────────────────────────────────
+	if info, err := host.Info(); err == nil {
+		metrics["uptime_seconds"] = info.Uptime
+		metrics["hostname"]       = info.Hostname
+		metrics["os_platform"]    = info.Platform
+		metrics["os_version"]     = info.PlatformVersion
+		metrics["kernel_version"] = info.KernelVersion
+	}
+
+	// ── Process Count ────────────────────────────────────────────────────────────
+	if procs, err := process.Pids(); err == nil {
+		metrics["process_count"] = len(procs)
+	}
+
+	// ── Open Connections ─────────────────────────────────────────────────────────
+	if conns, err := net.Connections("all"); err == nil {
+		metrics["open_connections"] = len(conns)
 	}
 
 	return metrics
 }
+
 
 // processHeartbeat sends metrics to the backend and dispatches any returned commands.
 // Returns the backend-requested heartbeat interval (0 if unchanged).
