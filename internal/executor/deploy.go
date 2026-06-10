@@ -57,8 +57,7 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 	}
 	defer os.RemoveAll(workdir)
 
-	image := "thalesops/" + sanitizeName(p.AppSlug)
-	container := "thalesops-" + sanitizeName(p.AppSlug)
+	image := imageName(p.AppSlug)
 
 	// ── 1. Clone ──────────────────────────────────────────────────────────────
 	sh.System("Cloning repository…")
@@ -75,12 +74,35 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 
 	// ── 3. Run ────────────────────────────────────────────────────────────────
 	sh.System("Starting container…")
+	if code, err := runContainer(ctx, sh, p.AppSlug, p.Port, p.Env); err != nil {
+		return fail(code, "docker run failed: "+err.Error())
+	}
+
+	sh.System("Deployment successful — container is running.")
+	return models.CommandResultRequest{
+		ExitCode: 0,
+		Stdout:   fmt.Sprintf("Deployed %s on port %d", p.RepoFullName, p.Port),
+	}
+}
+
+// imageName / containerName derive the stable Docker names for an app slug.
+// Stable across deploys so a build overwrites the same tag and a restart reuses it.
+func imageName(appSlug string) string     { return "thalesops/" + sanitizeName(appSlug) }
+func containerName(appSlug string) string { return "thalesops-" + sanitizeName(appSlug) }
+
+// runContainer replaces the app's container with a fresh one from its existing
+// image, injecting env via a temp --env-file. Shared by deploy (after build) and
+// restart (reuse build). Returns the exit code and any error.
+func runContainer(ctx context.Context, sh *LogShipper, appSlug string, port int, env map[string]string) (int, error) {
+	image := imageName(appSlug)
+	container := containerName(appSlug)
+
 	// Replace any previous container with the same name (ignore errors if absent).
 	_, _ = runStreaming(ctx, sh, "docker", "rm", "-f", container)
 
-	envFile, err := writeEnvFile(p.Env)
+	envFile, err := writeEnvFile(env)
 	if err != nil {
-		return fail(1, "could not write env file: "+err.Error())
+		return 1, fmt.Errorf("could not write env file: %w", err)
 	}
 	if envFile != "" {
 		defer os.Remove(envFile)
@@ -90,20 +112,12 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 	if envFile != "" {
 		runArgs = append(runArgs, "--env-file", envFile)
 	}
-	if p.Port > 0 {
-		runArgs = append(runArgs, "-p", fmt.Sprintf("%d:%d", p.Port, p.Port))
+	if port > 0 {
+		runArgs = append(runArgs, "-p", fmt.Sprintf("%d:%d", port, port))
 	}
 	runArgs = append(runArgs, image)
 
-	if code, err := runStreaming(ctx, sh, "docker", runArgs...); err != nil {
-		return fail(code, "docker run failed: "+err.Error())
-	}
-
-	sh.System("Deployment successful — container is running.")
-	return models.CommandResultRequest{
-		ExitCode: 0,
-		Stdout:   fmt.Sprintf("Deployed %s on port %d", p.RepoFullName, p.Port),
-	}
+	return runStreaming(ctx, sh, "docker", runArgs...)
 }
 
 // runStreaming runs a command, streaming stdout and stderr to the shipper line

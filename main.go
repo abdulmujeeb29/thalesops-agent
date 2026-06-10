@@ -243,6 +243,12 @@ func dispatchCommand(client *api.Client, cmd models.AgentCommand, cfg *config.Co
 			result = executor.ExecuteDeploy(cmd.Payload, deployTimeout, func(lines []models.LogLine) error {
 				return client.SubmitLogs(cmd.ID, lines)
 			})
+		case "RESTART":
+			// Restart reuses the existing image (no build), so the normal command
+			// timeout is plenty. Streams its logs the same way.
+			result = executor.ExecuteRestart(cmd.Payload, timeout, func(lines []models.LogLine) error {
+				return client.SubmitLogs(cmd.ID, lines)
+			})
 		default:
 			result = models.CommandResultRequest{
 				ExitCode: 1,
