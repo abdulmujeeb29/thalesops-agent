@@ -21,6 +21,7 @@ import (
 	"github.com/thalesops/agent/internal/config"
 	"github.com/thalesops/agent/internal/executor"
 	"github.com/thalesops/agent/internal/models"
+	"github.com/thalesops/agent/internal/system"
 )
 
 // Version is injected at build time via:
@@ -51,10 +52,8 @@ func main() {
 			"arch":    runtime.GOARCH,
 			"version": runtime.Version(),
 		},
-		Capabilities: map[string]interface{}{
-			"shell":  true,
-			"docker": true,
-		},
+		// Real, detected capabilities (docker/nixpacks presence + versions).
+		Capabilities: system.Capabilities(),
 		AgentVersion: Version,
 	})
 
@@ -237,6 +236,13 @@ func dispatchCommand(client *api.Client, cmd models.AgentCommand, cfg *config.Co
 		switch cmd.CommandType {
 		case "SHELL":
 			result = executor.ExecuteShell(cmd.Payload, timeout)
+		case "DEPLOY":
+			// Deploys can run for minutes (clone + build + run), so they use a
+			// longer timeout and stream their logs back as they run.
+			deployTimeout := time.Duration(cfg.DeployTimeout) * time.Second
+			result = executor.ExecuteDeploy(cmd.Payload, deployTimeout, func(lines []models.LogLine) error {
+				return client.SubmitLogs(cmd.ID, lines)
+			})
 		default:
 			result = models.CommandResultRequest{
 				ExitCode: 1,

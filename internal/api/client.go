@@ -91,3 +91,22 @@ func (c *Client) SubmitResult(commandID string, result models.CommandResultReque
 	}
 	return nil
 }
+
+// SubmitLogs streams a batch of log lines for a running command.
+// Best-effort: callers should not abort a deploy if this fails.
+func (c *Client) SubmitLogs(commandID string, lines []models.LogLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	path := fmt.Sprintf("/api/v1/agent/commands/%s/logs/", commandID)
+	resp, err := c.doRequest("POST", path, models.CommandLogBatch{Logs: lines})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("submitting logs failed with status: %d", resp.StatusCode)
+	}
+	return nil
+}

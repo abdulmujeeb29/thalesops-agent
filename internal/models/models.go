@@ -36,3 +36,27 @@ type SuccessResponse struct {
 	Message string      `json:"message"`
 	Data    interface{} `json:"data"`
 }
+
+// LogLine is a single streamed line of deploy output.
+type LogLine struct {
+	Stream  string `json:"stream"` // "stdout" | "stderr" | "system"
+	Content string `json:"content"`
+}
+
+// CommandLogBatch is the body sent to the agent log-streaming endpoint.
+type CommandLogBatch struct {
+	Logs []LogLine `json:"logs"`
+}
+
+// DeployPayload is the typed view of a DEPLOY command's payload.
+// Parsed defensively from the generic map the backend sends.
+type DeployPayload struct {
+	DeploymentID string
+	AppSlug      string
+	RepoFullName string
+	CloneURL     string
+	Branch       string
+	BuildMethod  string
+	Port         int
+	Env          map[string]string
+}

@@ -44,6 +44,42 @@ case "$ARCH" in
   *)        error "Unsupported architecture: $ARCH" ;;
 esac
 
+# ── Install deploy prerequisites (Docker + Nixpacks) ──────────────────────────
+# These make the server able to actually build & run apps. Installed once here so
+# the agent is deploy-ready from the moment it comes online — on any Linux distro.
+
+install_docker() {
+  if command -v docker >/dev/null 2>&1; then
+    info "Docker already installed ($(docker --version 2>/dev/null))."
+    return
+  fi
+  info "Installing Docker (this can take a minute)..."
+  # Docker's official convenience script supports Ubuntu, Debian, CentOS, Rocky, etc.
+  if curl -fsSL https://get.docker.com | sh; then
+    systemctl enable docker >/dev/null 2>&1 || true
+    systemctl start docker  >/dev/null 2>&1 || true
+    info "Docker installed."
+  else
+    warn "Automatic Docker install failed. Install Docker manually, then re-run this script."
+  fi
+}
+
+install_nixpacks() {
+  if command -v nixpacks >/dev/null 2>&1; then
+    info "Nixpacks already installed ($(nixpacks --version 2>/dev/null))."
+    return
+  fi
+  info "Installing Nixpacks..."
+  if curl -fsSL https://nixpacks.com/install.sh | bash; then
+    info "Nixpacks installed."
+  else
+    warn "Automatic Nixpacks install failed. Install it manually, then re-run this script."
+  fi
+}
+
+install_docker
+install_nixpacks
+
 # ── Download binary ───────────────────────────────────────────────────────────
 info "Downloading agent binary ($ARCH)..."
 curl -fsSL "$AGENT_BASE_URL/releases/$BINARY" -o "$INSTALL_BIN"
@@ -58,6 +94,7 @@ SERVER_ID=$THALES_SERVER_ID
 AGENT_TOKEN=$THALES_TOKEN
 HEARTBEAT_INTERVAL=60
 COMMAND_TIMEOUT=300
+DEPLOY_TIMEOUT=1200
 EOF
 chmod 600 "$ENV_DIR/.env"
 info "Config written to $ENV_DIR/.env"

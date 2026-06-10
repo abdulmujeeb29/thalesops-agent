@@ -13,6 +13,7 @@ type Config struct {
 	AgentToken     string
 	Interval       int
 	CommandTimeout int
+	DeployTimeout  int
 }
 
 func LoadConfig() *Config {
@@ -35,12 +36,22 @@ func LoadConfig() *Config {
 		}
 	}
 
+	// Deploys (clone + build + run) can legitimately take several minutes.
+	// Kept under the backend's 30-min RUNNING-timeout so the agent fails first.
+	deployTimeout := 1200
+	if v := getEnv("DEPLOY_TIMEOUT", ""); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			deployTimeout = n
+		}
+	}
+
 	return &Config{
 		BackendURL:     backendURL,
 		ServerID:       getEnv("SERVER_ID", ""),
 		AgentToken:     getEnv("AGENT_TOKEN", ""),
 		Interval:       interval,
 		CommandTimeout: commandTimeout,
+		DeployTimeout:  deployTimeout,
 	}
 }
 
