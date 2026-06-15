@@ -42,8 +42,10 @@ func ExecuteRestart(rawPayload map[string]interface{}, timeout time.Duration, fl
 		))
 	}
 
-	if code, err := runContainer(ctx, sh, p.AppSlug, p.Port, p.Env); err != nil {
-		return fail(code, "restart failed: "+err.Error())
+	// Health-gated: verify the image boots with the new env on a temp port before
+	// retiring the running container, so a bad env value can't take the app down.
+	if code, err := deployContainer(ctx, sh, p.AppSlug, p.Port, p.Env); err != nil {
+		return fail(code, err.Error())
 	}
 
 	sh.System("Restart successful — container is running with the new configuration.")

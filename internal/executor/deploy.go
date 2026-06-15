@@ -72,10 +72,10 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 		return fail(code, "nixpacks build failed: "+err.Error())
 	}
 
-	// ── 3. Run ────────────────────────────────────────────────────────────────
+	// ── 3. Run (health-gated swap: verify new container before retiring old) ──
 	sh.System("Starting container…")
-	if code, err := runContainer(ctx, sh, p.AppSlug, p.Port, p.Env); err != nil {
-		return fail(code, "docker run failed: "+err.Error())
+	if code, err := deployContainer(ctx, sh, p.AppSlug, p.Port, p.Env); err != nil {
+		return fail(code, err.Error())
 	}
 
 	sh.System("Deployment successful — container is running.")
