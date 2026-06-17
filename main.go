@@ -249,6 +249,13 @@ func dispatchCommand(client *api.Client, cmd models.AgentCommand, cfg *config.Co
 			result = executor.ExecuteRestart(cmd.Payload, timeout, func(lines []models.LogLine) error {
 				return client.SubmitLogs(cmd.ID, lines)
 			})
+		case "STREAM_LOGS":
+			// Tail the running app's own logs to the app-log buffer for a bounded
+			// session. Logs go to the app-log endpoint, keyed by application_id.
+			appID, _ := cmd.Payload["application_id"].(string)
+			result = executor.ExecuteStreamLogs(cmd.Payload, func(lines []models.LogLine) error {
+				return client.SubmitAppLogs(appID, lines)
+			})
 		default:
 			result = models.CommandResultRequest{
 				ExitCode: 1,

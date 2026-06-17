@@ -48,6 +48,20 @@ type CommandLogBatch struct {
 	Logs []LogLine `json:"logs"`
 }
 
+// AppLogBatch is the body sent to the agent runtime-app-log endpoint.
+type AppLogBatch struct {
+	ApplicationID string    `json:"application_id"`
+	Logs          []LogLine `json:"logs"`
+}
+
+// StreamLogsPayload is the typed view of a STREAM_LOGS command's payload.
+type StreamLogsPayload struct {
+	ApplicationID   string
+	AppSlug         string
+	Tail            int
+	DurationSeconds int
+}
+
 // DeployPayload is the typed view of a DEPLOY command's payload.
 // Parsed defensively from the generic map the backend sends.
 type DeployPayload struct {

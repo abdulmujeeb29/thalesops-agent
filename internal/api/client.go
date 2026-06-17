@@ -110,3 +110,21 @@ func (c *Client) SubmitLogs(commandID string, lines []models.LogLine) error {
 	}
 	return nil
 }
+
+// SubmitAppLogs streams a batch of a running app's runtime logs. Best-effort.
+func (c *Client) SubmitAppLogs(applicationID string, lines []models.LogLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	resp, err := c.doRequest("POST", "/api/v1/agent/app-logs/",
+		models.AppLogBatch{ApplicationID: applicationID, Logs: lines})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("submitting app logs failed with status: %d", resp.StatusCode)
+	}
+	return nil
+}
