@@ -57,13 +57,26 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 	}
 	defer os.RemoveAll(workdir)
 
-	image := imageName(p.AppSlug)
+	// Versioned, kept image — enables rollback to this exact build later.
+	image := imageRef(p.AppSlug, p.ImageTag)
 
 	// ── 1. Clone ──────────────────────────────────────────────────────────────
 	sh.System("Cloning repository…")
 	if code, err := runStreaming(ctx, sh, "git", "clone", "--depth", "1",
 		"--branch", p.Branch, p.CloneURL, workdir); err != nil {
 		return fail(code, "git clone failed: "+err.Error())
+	}
+
+	// Optionally check out a SPECIFIC commit (deploy-a-commit). Needs a fetch
+	// because the shallow clone above only has the branch tip.
+	if p.Commit != "" {
+		sh.System("Checking out commit " + shortSHA(p.Commit) + "…")
+		if code, err := runStreaming(ctx, sh, "git", "-C", workdir, "fetch", "--depth", "1", "origin", p.Commit); err != nil {
+			return fail(code, "could not fetch commit "+shortSHA(p.Commit)+": "+err.Error())
+		}
+		if code, err := runStreaming(ctx, sh, "git", "-C", workdir, "checkout", p.Commit); err != nil {
+			return fail(code, "could not check out commit "+shortSHA(p.Commit)+": "+err.Error())
+		}
 	}
 
 	// ── 2. Build ──────────────────────────────────────────────────────────────
@@ -74,9 +87,12 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 
 	// ── 3. Run (health-gated swap: verify new container before retiring old) ──
 	sh.System("Starting container…")
-	if code, err := deployContainer(ctx, sh, p.AppSlug, p.Port, p.Env); err != nil {
+	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.Env); err != nil {
 		return fail(code, err.Error())
 	}
+
+	// Keep the last few image versions for rollback; prune older ones.
+	pruneOldImages(ctx, sh, p.AppSlug, 5)
 
 	sh.System("Deployment successful — container is running.")
 	return models.CommandResultRequest{
@@ -85,16 +101,60 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 	}
 }
 
-// imageName / containerName derive the stable Docker names for an app slug.
-// Stable across deploys so a build overwrites the same tag and a restart reuses it.
-func imageName(appSlug string) string     { return "thalesops/" + sanitizeName(appSlug) }
+// imageRepo / containerName derive the stable Docker names for an app slug.
+func imageRepo(appSlug string) string     { return "thalesops/" + sanitizeName(appSlug) }
 func containerName(appSlug string) string { return "thalesops-" + sanitizeName(appSlug) }
+
+// imageRef is the versioned image reference, e.g. thalesops/<slug>:<tag>.
+// Falls back to :latest for older/untagged payloads.
+func imageRef(appSlug, tag string) string {
+	if tag == "" {
+		tag = "latest"
+	}
+	return imageRepo(appSlug) + ":" + tag
+}
+
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
+}
+
+// pruneOldImages keeps the newest `keep` tagged images for an app and removes
+// older ones (so the rollback history is bounded). The in-use image is recent,
+// so it's always in the keep set; `docker rmi` on any still-referenced image
+// fails harmlessly and is ignored.
+func pruneOldImages(ctx context.Context, sh *LogShipper, appSlug string, keep int) {
+	repo := imageRepo(appSlug)
+	out, err := exec.CommandContext(ctx, "docker", "images", repo,
+		"--format", "{{.Repository}}:{{.Tag}}").Output()
+	if err != nil {
+		return
+	}
+	var refs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasSuffix(line, ":<none>") {
+			continue
+		}
+		refs = append(refs, line)
+	}
+	removed := 0
+	for i := keep; i < len(refs); i++ { // docker images lists newest-first
+		if err := exec.CommandContext(ctx, "docker", "rmi", refs[i]).Run(); err == nil {
+			removed++
+		}
+	}
+	if removed > 0 {
+		sh.System(fmt.Sprintf("Pruned %d old image version(s), kept %d for rollback.", removed, keep))
+	}
+}
 
 // runContainer replaces the app's container with a fresh one from its existing
 // image, injecting env via a temp --env-file. Shared by deploy (after build) and
 // restart (reuse build). Returns the exit code and any error.
-func runContainer(ctx context.Context, sh *LogShipper, appSlug string, port int, env map[string]string) (int, error) {
-	image := imageName(appSlug)
+func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port int, env map[string]string) (int, error) {
 	container := containerName(appSlug)
 
 	// Replace any previous container with the same name (ignore errors if absent).
@@ -183,6 +243,8 @@ func parseDeployPayload(m map[string]interface{}) models.DeployPayload {
 	if p.Branch == "" {
 		p.Branch = "main"
 	}
+	p.Commit = asString(m["commit"])
+	p.ImageTag = asString(m["image_tag"])
 	p.BuildMethod = asString(m["build_method"])
 	p.Port = asInt(m["port"])
 	if env, ok := m["env"].(map[string]interface{}); ok {

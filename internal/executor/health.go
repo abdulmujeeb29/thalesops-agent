@@ -23,19 +23,18 @@ const HealthCheckTimeout = 60 * time.Second
 //
 // The key guarantee: a broken build/env can never take down the running app —
 // the old container is only removed once the new one is proven to start.
-func deployContainer(ctx context.Context, sh *LogShipper, appSlug string, port int, env map[string]string) (int, error) {
-	if err := smokeTest(ctx, sh, appSlug, port, env); err != nil {
+func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port int, env map[string]string) (int, error) {
+	if err := smokeTest(ctx, sh, appSlug, image, port, env); err != nil {
 		// Old container untouched — no downtime from a bad deploy.
 		return 1, err
 	}
 	sh.System("Health check passed — swapping to the new version…")
-	return runContainer(ctx, sh, appSlug, port, env)
+	return runContainer(ctx, sh, appSlug, image, port, env)
 }
 
-// smokeTest starts a throwaway container from the app's image on a random
+// smokeTest starts a throwaway container from the given image on a random
 // localhost port and verifies it boots, without touching the live container.
-func smokeTest(ctx context.Context, sh *LogShipper, appSlug string, port int, env map[string]string) error {
-	image := imageName(appSlug)
+func smokeTest(ctx context.Context, sh *LogShipper, appSlug, image string, port int, env map[string]string) error {
 	checkName := containerName(appSlug) + "-check"
 
 	// Clean any leftover check container from a previous (interrupted) run.

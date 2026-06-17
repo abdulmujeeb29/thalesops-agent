@@ -34,17 +34,18 @@ func ExecuteRestart(rawPayload map[string]interface{}, timeout time.Duration, fl
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Guard: the image must already exist (from a prior build). Restart can't build.
-	image := imageName(p.AppSlug)
+	// The specific versioned image to (re-)run. For an env-change restart this is
+	// the current image; for a ROLLBACK it's a previous build's image.
+	image := imageRef(p.AppSlug, p.ImageTag)
 	if err := exec.CommandContext(ctx, "docker", "image", "inspect", image).Run(); err != nil {
 		return fail(1, fmt.Sprintf(
-			"no built image found for this app (%s) — deploy it once before restarting", image,
+			"image %s not found on this server — it may have been pruned; redeploy instead", image,
 		))
 	}
 
 	// Health-gated: verify the image boots with the new env on a temp port before
 	// retiring the running container, so a bad env value can't take the app down.
-	if code, err := deployContainer(ctx, sh, p.AppSlug, p.Port, p.Env); err != nil {
+	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.Env); err != nil {
 		return fail(code, err.Error())
 	}
 

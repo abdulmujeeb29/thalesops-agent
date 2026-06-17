@@ -62,7 +62,7 @@ type StreamLogsPayload struct {
 	DurationSeconds int
 }
 
-// DeployPayload is the typed view of a DEPLOY command's payload.
+// DeployPayload is the typed view of a DEPLOY/RESTART command's payload.
 // Parsed defensively from the generic map the backend sends.
 type DeployPayload struct {
 	DeploymentID string
@@ -70,6 +70,8 @@ type DeployPayload struct {
 	RepoFullName string
 	CloneURL     string
 	Branch       string
+	Commit       string // if set, check out this exact commit instead of branch HEAD
+	ImageTag     string // versioned image tag: thalesops/<slug>:<tag> (kept for rollback)
 	BuildMethod  string
 	Port         int
 	Env          map[string]string
