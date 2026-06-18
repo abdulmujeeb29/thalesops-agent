@@ -23,13 +23,23 @@ const HealthCheckTimeout = 60 * time.Second
 //
 // The key guarantee: a broken build/env can never take down the running app —
 // the old container is only removed once the new one is proven to start.
-func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port int, env map[string]string) (int, error) {
+func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, domains []string) (int, error) {
 	if err := smokeTest(ctx, sh, appSlug, image, port, env); err != nil {
 		// Old container untouched — no downtime from a bad deploy.
 		return 1, err
 	}
 	sh.System("Health check passed — swapping to the new version…")
-	return runContainer(ctx, sh, appSlug, image, port, env)
+	// Use the proxy only if Caddy is present and the app has domains; otherwise
+	// publish the host port directly so the app is still reachable.
+	useProxy := proxyAvailable() && hostPort > 0 && len(domains) > 0
+	code, err := runContainer(ctx, sh, appSlug, image, port, hostPort, env, useProxy)
+	if err != nil {
+		return code, err
+	}
+	if useProxy {
+		configureProxy(ctx, sh, appSlug, hostPort, domains)
+	}
+	return 0, nil
 }
 
 // smokeTest starts a throwaway container from the given image on a random

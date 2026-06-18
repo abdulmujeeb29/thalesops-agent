@@ -77,8 +77,50 @@ install_nixpacks() {
   fi
 }
 
+install_caddy() {
+  if command -v caddy >/dev/null 2>&1; then
+    info "Caddy already installed ($(caddy version 2>/dev/null | head -1))."
+  else
+    info "Installing Caddy (reverse proxy + automatic HTTPS)..."
+    # Official Caddy apt repo (Debian/Ubuntu). Installs a systemd service too.
+    if apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null 2>&1 \
+       && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+       && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list \
+       && apt-get update >/dev/null 2>&1 && apt-get install -y caddy >/dev/null 2>&1; then
+      info "Caddy installed."
+    else
+      warn "Automatic Caddy install failed. Apps will be reachable on their host port until Caddy is set up."
+      return
+    fi
+  fi
+
+  # Base Caddyfile that imports one snippet per app (the agent writes those).
+  mkdir -p /etc/thalesops/caddy
+  if ! grep -q "/etc/thalesops/caddy" /etc/caddy/Caddyfile 2>/dev/null; then
+    cat > /etc/caddy/Caddyfile <<'CADDY'
+# Managed by ThalesOps — per-app routes live in /etc/thalesops/caddy/*.caddy
+import /etc/thalesops/caddy/*.caddy
+CADDY
+  fi
+  systemctl enable caddy >/dev/null 2>&1 || true
+  systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy >/dev/null 2>&1 || true
+}
+
+open_firewall() {
+  # Apps bind to localhost; only the proxy's web ports need to be public.
+  if command -v ufw >/dev/null 2>&1; then
+    info "Allowing web traffic (80/443) through the OS firewall (ufw)..."
+    ufw allow 22/tcp  >/dev/null 2>&1 || true   # never lock out SSH
+    ufw allow 80/tcp  >/dev/null 2>&1 || true
+    ufw allow 443/tcp >/dev/null 2>&1 || true
+  fi
+  warn "If your cloud provider has its own firewall / security group, open ports 80 and 443 there too — that's the only place ThalesOps can't reach."
+}
+
 install_docker
 install_nixpacks
+install_caddy
+open_firewall
 
 # ── Download binary ───────────────────────────────────────────────────────────
 info "Downloading agent binary ($ARCH)..."

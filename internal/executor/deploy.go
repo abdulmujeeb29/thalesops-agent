@@ -87,7 +87,7 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 
 	// ── 3. Run (health-gated swap: verify new container before retiring old) ──
 	sh.System("Starting container…")
-	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.Env); err != nil {
+	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.HostPort, p.Env, p.Domains); err != nil {
 		return fail(code, err.Error())
 	}
 
@@ -154,7 +154,7 @@ func pruneOldImages(ctx context.Context, sh *LogShipper, appSlug string, keep in
 // runContainer replaces the app's container with a fresh one from its existing
 // image, injecting env via a temp --env-file. Shared by deploy (after build) and
 // restart (reuse build). Returns the exit code and any error.
-func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port int, env map[string]string) (int, error) {
+func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, useProxy bool) (int, error) {
 	container := containerName(appSlug)
 
 	// Replace any previous container with the same name (ignore errors if absent).
@@ -172,7 +172,14 @@ func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, po
 	if envFile != "" {
 		runArgs = append(runArgs, "--env-file", envFile)
 	}
-	if port > 0 {
+	switch {
+	case useProxy && hostPort > 0 && port > 0:
+		// Proxy fronts it → bind to localhost only; the proxy is the public entry.
+		runArgs = append(runArgs, "-p", fmt.Sprintf("127.0.0.1:%d:%d", hostPort, port))
+	case hostPort > 0 && port > 0:
+		// No proxy → publish on the host port so it's still reachable at ip:host_port.
+		runArgs = append(runArgs, "-p", fmt.Sprintf("%d:%d", hostPort, port))
+	case port > 0:
 		runArgs = append(runArgs, "-p", fmt.Sprintf("%d:%d", port, port))
 	}
 	runArgs = append(runArgs, image)
@@ -247,9 +254,17 @@ func parseDeployPayload(m map[string]interface{}) models.DeployPayload {
 	p.ImageTag = asString(m["image_tag"])
 	p.BuildMethod = asString(m["build_method"])
 	p.Port = asInt(m["port"])
+	p.HostPort = asInt(m["host_port"])
 	if env, ok := m["env"].(map[string]interface{}); ok {
 		for k, v := range env {
 			p.Env[k] = asString(v)
+		}
+	}
+	if domains, ok := m["domains"].([]interface{}); ok {
+		for _, d := range domains {
+			if s := asString(d); s != "" {
+				p.Domains = append(p.Domains, s)
+			}
 		}
 	}
 	return p

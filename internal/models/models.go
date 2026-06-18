@@ -73,6 +73,8 @@ type DeployPayload struct {
 	Commit       string // if set, check out this exact commit instead of branch HEAD
 	ImageTag     string // versioned image tag: thalesops/<slug>:<tag> (kept for rollback)
 	BuildMethod  string
-	Port         int
+	Port         int      // container's internal port
+	HostPort     int      // localhost port to publish on (the proxy routes here)
+	Domains      []string // hostnames the reverse proxy should route to this app
 	Env          map[string]string
 }
