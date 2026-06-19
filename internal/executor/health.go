@@ -29,15 +29,29 @@ func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string,
 		return 1, err
 	}
 	sh.System("Health check passed — swapping to the new version…")
-	// Use the proxy only if Caddy is present and the app has domains; otherwise
-	// publish the host port directly so the app is still reachable.
-	useProxy := proxyAvailable() && hostPort > 0 && len(domains) > 0
+	// Pick the proxy backend by what already fronts this server (Caddy on a clean
+	// box, nginx if it's already there). Only bind localhost if a backend will
+	// actually route to us; otherwise publish the host port so the app stays reachable.
+	backend := detectProxyBackend()
+	useProxy := backend != "none" && hostPort > 0 && len(domains) > 0
 	code, err := runContainer(ctx, sh, appSlug, image, port, hostPort, env, useProxy)
 	if err != nil {
 		return code, err
 	}
 	if useProxy {
-		configureProxy(ctx, sh, appSlug, hostPort, domains)
+		configureProxy(ctx, sh, backend, appSlug, hostPort, domains)
+	} else if len(domains) > 0 && hostPort > 0 {
+		// User wanted a domain but we have no managed proxy on this server — explain.
+		owner := portOwner(443)
+		reason := "no reverse proxy is set up"
+		if owner != "" && owner != "caddy" && owner != "nginx" {
+			reason = fmt.Sprintf("port 443 is held by %q (not managed by ThalesOps)", owner)
+		}
+		sh.System(fmt.Sprintf(
+			"⚠ Domain routing skipped (%s). The app is live on its host port; "+
+				"re-run the ThalesOps installer to set up a proxy, or free ports 80/443.",
+			reason,
+		))
 	}
 	return 0, nil
 }

@@ -77,19 +77,42 @@ install_nixpacks() {
   fi
 }
 
+# Decide the proxy backend by respecting whatever already runs on this server.
+# Clean server → install Caddy (automatic HTTPS). nginx already here → leave it
+# in place and set up certbot so the agent can route through nginx instead.
+setup_proxy() {
+  local on443=""
+  if command -v ss >/dev/null 2>&1; then
+    on443=$(ss -ltnp 2>/dev/null | grep -oE 'users:\(\("[a-z]+' | grep -oE '[a-z]+$' | while read -r p; do
+      ss -ltnp 2>/dev/null | grep ":443 " | grep -q "\"$p\"" && echo "$p"; done | head -1)
+  fi
+
+  if command -v nginx >/dev/null 2>&1 || [ "$on443" = "nginx" ]; then
+    info "nginx detected — ThalesOps will route through your existing nginx (not replacing it)."
+    if ! command -v certbot >/dev/null 2>&1; then
+      info "Installing certbot + nginx plugin for HTTPS..."
+      apt-get install -y certbot python3-certbot-nginx >/dev/null 2>&1 \
+        || warn "certbot install failed — apps will be served over HTTP until it's installed."
+    fi
+    mkdir -p /etc/nginx/conf.d
+    return
+  fi
+
+  install_caddy
+}
+
 install_caddy() {
   if command -v caddy >/dev/null 2>&1; then
     info "Caddy already installed ($(caddy version 2>/dev/null | head -1))."
   else
-    info "Installing Caddy (reverse proxy + automatic HTTPS)..."
-    # Official Caddy apt repo (Debian/Ubuntu). Installs a systemd service too.
+    info "No reverse proxy found — installing Caddy (automatic HTTPS)..."
     if apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null 2>&1 \
        && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
        && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list \
        && apt-get update >/dev/null 2>&1 && apt-get install -y caddy >/dev/null 2>&1; then
       info "Caddy installed."
     else
-      warn "Automatic Caddy install failed. Apps will be reachable on their host port until Caddy is set up."
+      warn "Automatic Caddy install failed. Apps will be reachable on their host port until a proxy is set up."
       return
     fi
   fi
@@ -119,7 +142,7 @@ open_firewall() {
 
 install_docker
 install_nixpacks
-install_caddy
+setup_proxy
 open_firewall
 
 # ── Download binary ───────────────────────────────────────────────────────────
