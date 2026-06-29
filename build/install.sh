@@ -4,11 +4,10 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 # ThalesOps Agent Installer
 # Usage:
-#   curl -fsSL https://staging-agent.thalesops.com/install.sh \
-#     -o thalesops-install.sh && \
-#     sudo env THALES_TOKEN=tc_agt_xxx \
+#   curl -fsSL https://staging-agent.thalesops.com/install.sh | \
+#     THALES_TOKEN=tc_agt_xxx \
 #     THALES_SERVER_ID=uuid \
-#     THALES_BACKEND_URL=https://staging.thalesops.com bash thalesops-install.sh
+#     THALES_BACKEND_URL=https://staging.thalesops.com bash
 # -----------------------------------------------------------------------------
 
 AGENT_BASE_URL="https://staging-agent.thalesops.com"
@@ -22,9 +21,9 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-info()  { echo -e "${GREEN}[ThalesOps]${NC} $1"; }
-warn()  { echo -e "${YELLOW}[ThalesOps]${NC} $1"; }
-error() { echo -e "${RED}[ThalesOps] ERROR:${NC} $1"; exit 1; }
+info()    { echo -e "${GREEN}[ThalesOps]${NC} $1"; }
+warn()    { echo -e "${YELLOW}[ThalesOps]${NC} $1"; }
+error()   { echo -e "${RED}[ThalesOps] ERROR:${NC} $1"; exit 1; }
 
 # ── Validation ────────────────────────────────────────────────────────────────
 [ -z "${THALES_TOKEN:-}"     ] && error "THALES_TOKEN is required"
@@ -45,58 +44,36 @@ case "$ARCH" in
   *)        error "Unsupported architecture: $ARCH" ;;
 esac
 
-# ── report() — POST a log line to the backend dashboard ──────────────────────
-# Silently fires and forgets; a failure here never aborts the install.
-report() {
-  local level="$1" msg="$2"
-  curl -sf -X POST "$BACKEND_URL/api/v1/agent/install-log/" \
-    -H "Content-Type: application/json" \
-    -d "{\"server_id\":\"$THALES_SERVER_ID\",\"token\":\"$THALES_TOKEN\",\"level\":\"$level\",\"message\":\"$msg\"}" \
-    >/dev/null 2>&1 || true
-}
-
-report "info" "Installation started (arch: $ARCH)"
-
 # ── Install deploy prerequisites (Docker + Nixpacks) ──────────────────────────
 # These make the server able to actually build & run apps. Installed once here so
-# the agent is deploy-ready from the moment it comes online.
+# the agent is deploy-ready from the moment it comes online — on any Linux distro.
 
 install_docker() {
   if command -v docker >/dev/null 2>&1; then
-    local ver; ver=$(docker --version 2>/dev/null || echo "unknown version")
-    info "Docker already installed ($ver)."
-    report "info" "Docker already installed ($ver)"
+    info "Docker already installed ($(docker --version 2>/dev/null))."
     return
   fi
   info "Installing Docker (this can take a minute)..."
-  report "info" "Installing Docker..."
+  # Docker's official convenience script supports Ubuntu, Debian, CentOS, Rocky, etc.
   if curl -fsSL https://get.docker.com | sh; then
     systemctl enable docker >/dev/null 2>&1 || true
     systemctl start docker  >/dev/null 2>&1 || true
-    local ver; ver=$(docker --version 2>/dev/null || echo "unknown version")
     info "Docker installed."
-    report "info" "Docker installed ($ver)"
   else
     warn "Automatic Docker install failed. Install Docker manually, then re-run this script."
-    report "warn" "Docker install failed — install it manually and re-run"
   fi
 }
 
 install_nixpacks() {
   if command -v nixpacks >/dev/null 2>&1; then
-    local ver; ver=$(nixpacks --version 2>/dev/null || echo "unknown version")
-    info "Nixpacks already installed ($ver)."
-    report "info" "Nixpacks already installed ($ver)"
+    info "Nixpacks already installed ($(nixpacks --version 2>/dev/null))."
     return
   fi
   info "Installing Nixpacks..."
-  report "info" "Installing Nixpacks..."
   if curl -fsSL https://nixpacks.com/install.sh | bash; then
     info "Nixpacks installed."
-    report "info" "Nixpacks installed"
   else
     warn "Automatic Nixpacks install failed. Install it manually, then re-run this script."
-    report "warn" "Nixpacks install failed — install it manually and re-run"
   fi
 }
 
@@ -112,16 +89,10 @@ setup_proxy() {
 
   if command -v nginx >/dev/null 2>&1 || [ "$on443" = "nginx" ]; then
     info "nginx detected — ThalesOps will route through your existing nginx (not replacing it)."
-    report "info" "nginx detected — routing through existing nginx"
     if ! command -v certbot >/dev/null 2>&1; then
       info "Installing certbot + nginx plugin for HTTPS..."
-      report "info" "Installing certbot for HTTPS..."
       apt-get install -y certbot python3-certbot-nginx >/dev/null 2>&1 \
-        && report "info" "certbot installed successfully" \
-        || { warn "certbot install failed — apps will be served over HTTP until it's installed."; \
-             report "warn" "certbot install failed — apps will be HTTP only until resolved"; }
-    else
-      report "info" "certbot already installed"
+        || warn "certbot install failed — apps will be served over HTTP until it's installed."
     fi
     mkdir -p /etc/nginx/conf.d
     return
@@ -132,21 +103,16 @@ setup_proxy() {
 
 install_caddy() {
   if command -v caddy >/dev/null 2>&1; then
-    local ver; ver=$(caddy version 2>/dev/null | head -1 || echo "unknown version")
-    info "Caddy already installed ($ver)."
-    report "info" "Caddy already installed ($ver)"
+    info "Caddy already installed ($(caddy version 2>/dev/null | head -1))."
   else
     info "No reverse proxy found — installing Caddy (automatic HTTPS)..."
-    report "info" "Installing Caddy (automatic HTTPS)..."
     if apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null 2>&1 \
        && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
        && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list \
        && apt-get update >/dev/null 2>&1 && apt-get install -y caddy >/dev/null 2>&1; then
       info "Caddy installed."
-      report "info" "Caddy installed"
     else
       warn "Automatic Caddy install failed. Apps will be reachable on their host port until a proxy is set up."
-      report "warn" "Caddy install failed — apps will use host port until a proxy is configured"
       return
     fi
   fi
@@ -170,27 +136,20 @@ open_firewall() {
     ufw allow 22/tcp  >/dev/null 2>&1 || true   # never lock out SSH
     ufw allow 80/tcp  >/dev/null 2>&1 || true
     ufw allow 443/tcp >/dev/null 2>&1 || true
-    report "info" "Firewall rules configured (ports 22, 80, 443)"
   fi
   warn "If your cloud provider has its own firewall / security group, open ports 80 and 443 there too — that's the only place ThalesOps can't reach."
 }
 
-# These are optional prerequisites — a failure here (e.g. certbot conflict on an
-# existing nginx server) must NOT abort the script before the agent is installed.
-set +e
 install_docker
 install_nixpacks
 setup_proxy
 open_firewall
-set -e
 
 # ── Download binary ───────────────────────────────────────────────────────────
 info "Downloading agent binary ($ARCH)..."
-report "info" "Downloading agent binary ($BINARY)..."
 curl -fsSL "$AGENT_BASE_URL/releases/$BINARY" -o "$INSTALL_BIN"
 chmod +x "$INSTALL_BIN"
 info "Binary installed at $INSTALL_BIN"
-report "info" "Agent binary downloaded and installed at $INSTALL_BIN"
 
 # ── Write env file ────────────────────────────────────────────────────────────
 mkdir -p "$ENV_DIR"
@@ -230,7 +189,6 @@ EOF
 # ── Enable and start ──────────────────────────────────────────────────────────
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" --quiet
-report "info" "Starting ThalesOps Agent service..."
 systemctl restart "$SERVICE_NAME"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
@@ -242,4 +200,3 @@ echo "  Logs   : journalctl -u $SERVICE_NAME -f"
 echo "  Stop   : systemctl stop $SERVICE_NAME"
 echo ""
 info "Your server should appear ONLINE in the ThalesOps dashboard within 60 seconds."
-report "info" "Installation complete — agent service started, waiting for first heartbeat"
