@@ -140,10 +140,14 @@ open_firewall() {
   warn "If your cloud provider has its own firewall / security group, open ports 80 and 443 there too — that's the only place ThalesOps can't reach."
 }
 
+# These are optional prerequisites — a failure here (e.g. certbot conflict on an
+# existing nginx server) must NOT abort the script before the agent is installed.
+set +e
 install_docker
 install_nixpacks
 setup_proxy
 open_firewall
+set -e
 
 # ── Download binary ───────────────────────────────────────────────────────────
 info "Downloading agent binary ($ARCH)..."
