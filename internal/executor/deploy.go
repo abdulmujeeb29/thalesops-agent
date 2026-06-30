@@ -260,6 +260,11 @@ func parseDeployPayload(m map[string]interface{}) models.DeployPayload {
 			p.Env[k] = asString(v)
 		}
 	}
+	if p.Port > 0 {
+		if _, exists := p.Env["PORT"]; !exists {
+			p.Env["PORT"] = fmt.Sprintf("%d", p.Port)
+		}
+	}
 	if domains, ok := m["domains"].([]interface{}); ok {
 		for _, d := range domains {
 			if s := asString(d); s != "" {
