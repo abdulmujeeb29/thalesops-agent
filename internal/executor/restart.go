@@ -45,7 +45,7 @@ func ExecuteRestart(rawPayload map[string]interface{}, timeout time.Duration, fl
 
 	// Health-gated: verify the image boots with the new env on a temp port before
 	// retiring the running container, so a bad env value can't take the app down.
-	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.HostPort, p.Env, p.Domains); err != nil {
+	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.HostPort, p.Env, p.Domains, p.HealthCheckPath); err != nil {
 		return fail(code, err.Error())
 	}
 

@@ -76,5 +76,11 @@ type DeployPayload struct {
 	Port         int      // container's internal port
 	HostPort     int      // localhost port to publish on (the proxy routes here)
 	Domains      []string // hostnames the reverse proxy should route to this app
-	Env          map[string]string
+
+	// Intelligent deployment (detection-driven, user-confirmed on the backend):
+	RunMigrations    bool   // run MigrationCommand before swapping in the new build
+	MigrationCommand string // e.g. "python manage.py migrate"
+	HealthCheckPath  string // HTTP path polled for a 2xx before go-live ('' = TCP-only)
+
+	Env map[string]string
 }

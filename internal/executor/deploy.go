@@ -85,9 +85,20 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 		return fail(code, "nixpacks build failed: "+err.Error())
 	}
 
-	// ── 3. Run (health-gated swap: verify new container before retiring old) ──
+	// ── 3. Migrate (before the swap, so a schema mismatch never serves traffic) ──
+	// Runs in a throwaway container off the just-built image with the app's real
+	// env. If it fails, we abort WITHOUT touching the running container — the
+	// current version keeps serving (zero downtime).
+	if p.RunMigrations && p.MigrationCommand != "" {
+		sh.System("Running database migrations…")
+		if code, err := runMigrations(ctx, sh, image, p.MigrationCommand, p.Env); err != nil {
+			return fail(code, "migrations failed — keeping the current version running: "+err.Error())
+		}
+	}
+
+	// ── 4. Run (health-gated swap: verify new container before retiring old) ──
 	sh.System("Starting container…")
-	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.HostPort, p.Env, p.Domains); err != nil {
+	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.HostPort, p.Env, p.Domains, p.HealthCheckPath); err != nil {
 		return fail(code, err.Error())
 	}
 
@@ -187,6 +198,27 @@ func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, po
 	return runStreaming(ctx, sh, "docker", runArgs...)
 }
 
+// runMigrations applies database migrations by running the migration command in
+// a one-shot (`--rm`) container off the just-built image, with the app's env (so
+// it has DATABASE_URL etc). Output streams to the console. Returns exit code +
+// error; a non-zero exit means the caller should abort the deploy.
+func runMigrations(ctx context.Context, sh *LogShipper, image, command string, env map[string]string) (int, error) {
+	envFile, err := writeEnvFile(env)
+	if err != nil {
+		return 1, fmt.Errorf("could not write env file: %w", err)
+	}
+	if envFile != "" {
+		defer os.Remove(envFile)
+	}
+	args := []string{"run", "--rm"}
+	if envFile != "" {
+		args = append(args, "--env-file", envFile)
+	}
+	// `sh -c` so a detected command with args/flags runs exactly as written.
+	args = append(args, image, "sh", "-c", command)
+	return runStreaming(ctx, sh, "docker", args...)
+}
+
 // runStreaming runs a command, streaming stdout and stderr to the shipper line
 // by line as they are produced. Returns the exit code and an error (if any).
 func runStreaming(ctx context.Context, sh *LogShipper, name string, args ...string) (int, error) {
@@ -272,7 +304,15 @@ func parseDeployPayload(m map[string]interface{}) models.DeployPayload {
 			}
 		}
 	}
+	p.RunMigrations = asBool(m["run_migrations"])
+	p.MigrationCommand = asString(m["migration_command"])
+	p.HealthCheckPath = asString(m["health_check_path"])
 	return p
+}
+
+func asBool(v interface{}) bool {
+	b, ok := v.(bool)
+	return ok && b
 }
 
 func asString(v interface{}) string {

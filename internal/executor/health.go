@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -23,8 +24,8 @@ const HealthCheckTimeout = 60 * time.Second
 //
 // The key guarantee: a broken build/env can never take down the running app —
 // the old container is only removed once the new one is proven to start.
-func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, domains []string) (int, error) {
-	if err := smokeTest(ctx, sh, appSlug, image, port, env); err != nil {
+func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, domains []string, healthPath string) (int, error) {
+	if err := smokeTest(ctx, sh, appSlug, image, port, env, healthPath); err != nil {
 		// Old container untouched — no downtime from a bad deploy.
 		return 1, err
 	}
@@ -58,7 +59,7 @@ func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string,
 
 // smokeTest starts a throwaway container from the given image on a random
 // localhost port and verifies it boots, without touching the live container.
-func smokeTest(ctx context.Context, sh *LogShipper, appSlug, image string, port int, env map[string]string) error {
+func smokeTest(ctx context.Context, sh *LogShipper, appSlug, image string, port int, env map[string]string, healthPath string) error {
 	checkName := containerName(appSlug) + "-check"
 
 	// Clean any leftover check container from a previous (interrupted) run.
@@ -95,7 +96,10 @@ func smokeTest(ctx context.Context, sh *LogShipper, appSlug, image string, port 
 		if err != nil {
 			return fmt.Errorf("could not determine health-check port: %w", err)
 		}
-		return waitForPort(ctx, sh, checkName, hostPort, HealthCheckTimeout)
+		if healthPath != "" {
+			sh.System(fmt.Sprintf("Waiting for a healthy response on %s…", healthPath))
+		}
+		return waitForPort(ctx, sh, checkName, hostPort, HealthCheckTimeout, healthPath)
 	}
 	// No published port (e.g. a worker): just confirm it doesn't crash on boot.
 	return waitStaysRunning(ctx, sh, checkName, 5*time.Second)
@@ -115,9 +119,14 @@ func assignedHostPort(ctx context.Context, name string, containerPort int) (stri
 	return line[i+1:], nil
 }
 
-// waitForPort polls until the container accepts a TCP connection on hostPort, or
-// times out. Fails fast (with the container's logs) if it exits during startup.
-func waitForPort(ctx context.Context, sh *LogShipper, name, hostPort string, timeout time.Duration) error {
+// waitForPort polls until the container is healthy on hostPort, or times out.
+// Fails fast (with the container's logs) if it exits during startup.
+//
+// If healthPath is empty, "healthy" means the app accepts a TCP connection
+// (it's listening). If healthPath is set, listening is not enough — we require
+// an HTTP GET on that path to return a 2xx/3xx, which catches an app that binds
+// the port but then errors on every request (e.g. a bad env var → 500 on boot).
+func waitForPort(ctx context.Context, sh *LogShipper, name, hostPort string, timeout time.Duration, healthPath string) error {
 	deadline := time.Now().Add(timeout)
 	addr := net.JoinHostPort("127.0.0.1", hostPort)
 	for time.Now().Before(deadline) {
@@ -127,12 +136,41 @@ func waitForPort(ctx context.Context, sh *LogShipper, name, hostPort string, tim
 		}
 		if conn, err := net.DialTimeout("tcp", addr, 2*time.Second); err == nil {
 			conn.Close()
-			return nil // healthy: app is listening
+			if healthPath == "" {
+				return nil // TCP-only: listening is enough
+			}
+			if httpHealthy(ctx, addr, healthPath) {
+				return nil // listening AND answering 2xx/3xx on the health path
+			}
+			// Listening but not healthy yet (still booting / returning 5xx) — keep polling.
 		}
 		time.Sleep(2 * time.Second)
 	}
 	dumpCheckLogs(ctx, sh, name)
+	if healthPath != "" {
+		return fmt.Errorf("the new build did not return a healthy response on %s within %s — keeping the current version running", healthPath, timeout)
+	}
 	return fmt.Errorf("the new build did not become healthy within %s — keeping the current version running", timeout)
+}
+
+// httpHealthy does one GET on http://<addr><path> and reports whether it
+// answered with a 2xx/3xx. Any transport error (still booting, connection reset)
+// counts as not-yet-healthy so the caller keeps polling until the deadline.
+func httpHealthy(ctx context.Context, addr, path string) bool {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+path, nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 400
 }
 
 // waitStaysRunning confirms a port-less container doesn't immediately crash.
