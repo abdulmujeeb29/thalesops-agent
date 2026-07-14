@@ -14,6 +14,10 @@ type Config struct {
 	Interval       int
 	CommandTimeout int
 	DeployTimeout  int
+	// WSEnabled turns the persistent WebSocket channel on (default). With it
+	// off — or whenever the socket is down — the agent behaves exactly as
+	// before: heartbeat polling alone.
+	WSEnabled bool
 }
 
 func LoadConfig() *Config {
@@ -45,6 +49,9 @@ func LoadConfig() *Config {
 		}
 	}
 
+	// Opt-out flag: WS_ENABLED=false disables the real-time channel entirely.
+	wsEnabled := !strings.EqualFold(getEnv("WS_ENABLED", "true"), "false")
+
 	return &Config{
 		BackendURL:     backendURL,
 		ServerID:       getEnv("SERVER_ID", ""),
@@ -52,6 +59,7 @@ func LoadConfig() *Config {
 		Interval:       interval,
 		CommandTimeout: commandTimeout,
 		DeployTimeout:  deployTimeout,
+		WSEnabled:      wsEnabled,
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/thalesops/agent/internal/executor"
 	"github.com/thalesops/agent/internal/models"
 	"github.com/thalesops/agent/internal/system"
+	"github.com/thalesops/agent/internal/ws"
 )
 
 // Version is injected at build time via:
@@ -30,11 +32,55 @@ import (
 var Version = "dev"
 
 // inFlight tracks command IDs that are currently executing.
-// Prevents the same command from being picked up and run twice across heartbeats.
+// Prevents the same command from being run twice even when it is delivered by
+// both paths (WebSocket push AND a racing heartbeat poll).
 var (
 	inFlightMu sync.Mutex
 	inFlight   = make(map[string]bool)
 )
+
+// commandSink is where results and log batches get submitted. Both the HTTP
+// client and the WS-with-fallback transport implement it.
+type commandSink interface {
+	SubmitResult(commandID string, result models.CommandResultRequest) error
+	SubmitLogs(commandID string, lines []models.LogLine) error
+	SubmitAppLogs(applicationID string, lines []models.LogLine) error
+}
+
+// transport prefers the WebSocket (instant, one connection) and transparently
+// falls back to the HTTP endpoints whenever the socket is down or a write
+// fails mid-flight — a dropped socket never loses results or logs.
+type transport struct {
+	ws   *ws.Client
+	http *api.Client
+}
+
+func (t *transport) SubmitResult(id string, r models.CommandResultRequest) error {
+	if t.ws != nil && t.ws.Connected() {
+		if err := t.ws.SubmitResult(id, r); err == nil {
+			return nil
+		}
+	}
+	return t.http.SubmitResult(id, r)
+}
+
+func (t *transport) SubmitLogs(id string, lines []models.LogLine) error {
+	if t.ws != nil && t.ws.Connected() {
+		if err := t.ws.SubmitLogs(id, lines); err == nil {
+			return nil
+		}
+	}
+	return t.http.SubmitLogs(id, lines)
+}
+
+func (t *transport) SubmitAppLogs(appID string, lines []models.LogLine) error {
+	if t.ws != nil && t.ws.Connected() {
+		if err := t.ws.SubmitAppLogs(appID, lines); err == nil {
+			return nil
+		}
+	}
+	return t.http.SubmitAppLogs(appID, lines)
+}
 
 func main() {
 	fmt.Printf("ThalesOps Agent starting... (version: %s)\n", Version)
@@ -57,6 +103,23 @@ func main() {
 		AgentVersion: Version,
 	})
 
+	// ── Real-time channel (WebSocket) ─────────────────────────────────────────
+	// Commands are pushed down this socket the instant they're queued; results
+	// and logs ride back up it. The heartbeat loop below keeps running as the
+	// metrics reporter, liveness lease, and guaranteed delivery fallback.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tr := &transport{http: client}
+	if cfg.WSEnabled {
+		wsClient := ws.New(cfg.BackendURL, cfg.ServerID, cfg.AgentToken, Version,
+			system.Capabilities(), func(cmd models.AgentCommand) {
+				dispatchCommand(tr, cmd, cfg)
+			})
+		tr.ws = wsClient
+		go wsClient.Run(ctx)
+	}
+
 	currentInterval := time.Duration(cfg.Interval) * time.Second
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
@@ -74,7 +137,7 @@ func main() {
 			return
 		case <-ticker.C:
 			metrics := collectMetrics()
-			newInterval := processHeartbeat(client, metrics, cfg)
+			newInterval := processHeartbeat(client, tr, metrics, cfg)
 			if newInterval > 0 && newInterval != currentInterval {
 				ticker.Stop()
 				currentInterval = newInterval
@@ -183,7 +246,9 @@ func collectMetrics() map[string]interface{} {
 
 // processHeartbeat sends metrics to the backend and dispatches any returned commands.
 // Returns the backend-requested heartbeat interval (0 if unchanged).
-func processHeartbeat(client *api.Client, metrics map[string]interface{}, cfg *config.Config) time.Duration {
+// When the WebSocket is up this normally returns zero commands (the socket got
+// them first) — but it remains the guaranteed delivery path when the socket is down.
+func processHeartbeat(client *api.Client, sink commandSink, metrics map[string]interface{}, cfg *config.Config) time.Duration {
 	fmt.Printf("Heartbeat: %v\n", metrics)
 
 	resp, err := client.Heartbeat(models.HeartbeatRequest{
@@ -198,7 +263,7 @@ func processHeartbeat(client *api.Client, metrics map[string]interface{}, cfg *c
 	if len(resp.Data.Commands) > 0 {
 		fmt.Printf("Received %d command(s)\n", len(resp.Data.Commands))
 		for _, cmd := range resp.Data.Commands {
-			dispatchCommand(client, cmd, cfg)
+			dispatchCommand(sink, cmd, cfg)
 		}
 	}
 
@@ -208,11 +273,11 @@ func processHeartbeat(client *api.Client, metrics map[string]interface{}, cfg *c
 	return 0
 }
 
-// dispatchCommand runs a command in its own goroutine so the heartbeat loop
-// is never blocked by long-running operations.
-// The inFlight map prevents the same command from executing twice if it appears
-// in back-to-back heartbeat responses before the first run completes.
-func dispatchCommand(client *api.Client, cmd models.AgentCommand, cfg *config.Config) {
+// dispatchCommand runs a command in its own goroutine so neither the heartbeat
+// loop nor the WS read loop is ever blocked by long-running operations.
+// The inFlight map prevents the same command from executing twice if it is
+// delivered by both paths (WS push + heartbeat) before the first run completes.
+func dispatchCommand(client commandSink, cmd models.AgentCommand, cfg *config.Config) {
 	inFlightMu.Lock()
 	if inFlight[cmd.ID] {
 		inFlightMu.Unlock()
