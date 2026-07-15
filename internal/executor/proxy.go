@@ -89,8 +89,19 @@ func configureCaddy(ctx context.Context, sh *LogShipper, appSlug string, hostPor
 		sh.Write("stderr", "could not create proxy config dir: "+err.Error())
 		return
 	}
-	block := fmt.Sprintf("%s {\n\treverse_proxy 127.0.0.1:%d\n}\n",
-		strings.Join(domains, ", "), hostPort)
+	// The @dotfiles matcher refuses probes for secret dotfiles (.env, .git, ...)
+	// before they reach the app. Caddy's regexes are RE2 (no lookahead), so the
+	// ACME path is excluded with a `not` submatcher instead.
+	block := fmt.Sprintf(`%s {
+	@dotfiles {
+		path_regexp /\.
+		not path /.well-known/*
+	}
+	respond @dotfiles 404
+
+	reverse_proxy 127.0.0.1:%d
+}
+`, strings.Join(domains, ", "), hostPort)
 	path := filepath.Join(caddySitesDir, sanitizeName(appSlug)+".caddy")
 	if err := os.WriteFile(path, []byte(block), 0o644); err != nil {
 		sh.Write("stderr", "could not write proxy config: "+err.Error())
@@ -122,6 +133,14 @@ func configureNginx(ctx context.Context, sh *LogShipper, appSlug string, hostPor
 server {
     listen 80;
     server_name %s;
+
+    # Refuse probes for secret dotfiles (.env, .git, ...) at the edge so they
+    # never reach the app container. /.well-known stays open (ACME renewals).
+    location ~ /\.(?!well-known) {
+        deny all;
+        return 404;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:%d;
         proxy_set_header Host $host;
