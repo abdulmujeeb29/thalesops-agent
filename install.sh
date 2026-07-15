@@ -150,9 +150,15 @@ open_firewall
 set -e
 
 # ── Download binary ───────────────────────────────────────────────────────────
+# Download to a sibling temp file, then rename over the target. Writing directly
+# onto a RUNNING binary fails with ETXTBSY (curl error 23) — which is exactly
+# what happens on a self-update. A rename in the same directory is atomic and
+# allowed; the running agent keeps its old inode until systemd restarts it.
 info "Downloading agent binary ($ARCH)..."
-curl -fsSL "$AGENT_BASE_URL/releases/$BINARY" -o "$INSTALL_BIN"
-chmod +x "$INSTALL_BIN"
+TMP_BIN="${INSTALL_BIN}.new"
+curl -fsSL "$AGENT_BASE_URL/releases/$BINARY" -o "$TMP_BIN"
+chmod +x "$TMP_BIN"
+mv -f "$TMP_BIN" "$INSTALL_BIN"
 info "Binary installed at $INSTALL_BIN"
 
 # ── Write env file ────────────────────────────────────────────────────────────
