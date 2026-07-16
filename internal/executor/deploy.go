@@ -307,6 +307,9 @@ func parseDeployPayload(m map[string]interface{}) models.DeployPayload {
 	p.RunMigrations = asBool(m["run_migrations"])
 	p.MigrationCommand = asString(m["migration_command"])
 	p.HealthCheckPath = asString(m["health_check_path"])
+	p.AppType = asString(m["app_type"])
+	p.BuildCommand = asString(m["build_command"])
+	p.PublishDir = asString(m["publish_dir"])
 	return p
 }
 

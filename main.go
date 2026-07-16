@@ -305,15 +305,29 @@ func dispatchCommand(client commandSink, cmd models.AgentCommand, cfg *config.Co
 			// Deploys can run for minutes (clone + build + run), so they use a
 			// longer timeout and stream their logs back as they run.
 			deployTimeout := time.Duration(cfg.DeployTimeout) * time.Second
-			result = executor.ExecuteDeploy(cmd.Payload, deployTimeout, func(lines []models.LogLine) error {
+			flush := func(lines []models.LogLine) error {
 				return client.SubmitLogs(cmd.ID, lines)
-			})
+			}
+			if appType, _ := cmd.Payload["app_type"].(string); appType == "STATIC" {
+				// Static site: build (optionally) → publish files → symlink flip.
+				// No runtime container.
+				result = executor.ExecuteStaticDeploy(cmd.Payload, deployTimeout, flush)
+			} else {
+				result = executor.ExecuteDeploy(cmd.Payload, deployTimeout, flush)
+			}
 		case "RESTART":
 			// Restart reuses the existing image (no build), so the normal command
 			// timeout is plenty. Streams its logs the same way.
-			result = executor.ExecuteRestart(cmd.Payload, timeout, func(lines []models.LogLine) error {
+			flush := func(lines []models.LogLine) error {
 				return client.SubmitLogs(cmd.ID, lines)
-			})
+			}
+			if appType, _ := cmd.Payload["app_type"].(string); appType == "STATIC" {
+				// Static "restart" only exists as a rollback: flip `current`
+				// back to a previous release folder.
+				result = executor.ExecuteStaticRollback(cmd.Payload, timeout, flush)
+			} else {
+				result = executor.ExecuteRestart(cmd.Payload, timeout, flush)
+			}
 		case "STREAM_LOGS":
 			// Tail the running app's own logs to the app-log buffer for a bounded
 			// session. Logs go to the app-log endpoint, keyed by application_id.

@@ -82,6 +82,112 @@ func configureProxy(ctx context.Context, sh *LogShipper, backend, appSlug string
 	}
 }
 
+// configureStaticProxy routes the app's domains to a static file server rooted
+// at <appDir>/current — no upstream container. SPA fallback is on: unknown
+// paths rewrite to /index.html so client-side routers (React/Vue/…) work on
+// refresh and deep links.
+func configureStaticProxy(ctx context.Context, sh *LogShipper, backend, appSlug, root string, domains []string) {
+	if len(domains) == 0 {
+		return
+	}
+	switch backend {
+	case "caddy":
+		configureStaticCaddy(ctx, sh, appSlug, root, domains)
+	case "nginx":
+		configureStaticNginx(ctx, sh, appSlug, root, domains)
+	}
+}
+
+func configureStaticCaddy(ctx context.Context, sh *LogShipper, appSlug, root string, domains []string) {
+	if err := os.MkdirAll(caddySitesDir, 0o755); err != nil {
+		sh.Write("stderr", "could not create proxy config dir: "+err.Error())
+		return
+	}
+	block := fmt.Sprintf(`%s {
+	root * %s
+	@dotfiles {
+		path_regexp /\.
+		not path /.well-known/*
+	}
+	respond @dotfiles 404
+
+	try_files {path} /index.html
+	file_server
+}
+`, strings.Join(domains, ", "), root)
+	path := filepath.Join(caddySitesDir, sanitizeName(appSlug)+".caddy")
+	if err := os.WriteFile(path, []byte(block), 0o644); err != nil {
+		sh.Write("stderr", "could not write proxy config: "+err.Error())
+		return
+	}
+	if err := reloadCaddy(ctx); err != nil {
+		sh.Write("stderr", "proxy reload failed: "+err.Error())
+		return
+	}
+	sh.System("Serving static site via Caddy (HTTPS auto-provisioned): " + strings.Join(domains, ", "))
+}
+
+func configureStaticNginx(ctx context.Context, sh *LogShipper, appSlug, root string, domains []string) {
+	if err := os.MkdirAll(nginxConfDir, 0o755); err != nil {
+		sh.Write("stderr", "could not access nginx config dir: "+err.Error())
+		return
+	}
+	serverName := strings.Join(domains, " ")
+	block := fmt.Sprintf(`# Managed by ThalesOps (static site)
+server {
+    listen 80;
+    server_name %s;
+    root %s;
+
+    location ~ /\.(?!well-known) {
+        deny all;
+        return 404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+`, serverName, root)
+
+	path := filepath.Join(nginxConfDir, "thalesops-"+sanitizeName(appSlug)+".conf")
+	if err := os.WriteFile(path, []byte(block), 0o644); err != nil {
+		sh.Write("stderr", "could not write nginx config: "+err.Error())
+		return
+	}
+	if err := exec.CommandContext(ctx, "nginx", "-t").Run(); err != nil {
+		os.Remove(path)
+		sh.Write("stderr", "nginx config test failed — leaving existing nginx untouched.")
+		return
+	}
+	if err := exec.CommandContext(ctx, "systemctl", "reload", "nginx").Run(); err != nil {
+		sh.Write("stderr", "nginx reload failed: "+err.Error())
+		return
+	}
+	sh.System("Serving static site via nginx: " + serverName)
+	provisionCertbot(ctx, sh, domains, serverName)
+}
+
+// provisionCertbot issues/renews HTTPS for the domains (best-effort). Shared by
+// the service and static nginx paths.
+func provisionCertbot(ctx context.Context, sh *LogShipper, domains []string, serverName string) {
+	if _, err := exec.LookPath("certbot"); err != nil {
+		sh.System("certbot not installed — served over HTTP. Install certbot for HTTPS.")
+		return
+	}
+	args := []string{"--nginx", "--non-interactive", "--agree-tos",
+		"--register-unsafely-without-email", "--redirect"}
+	for _, d := range domains {
+		args = append(args, "-d", d)
+	}
+	if err := exec.CommandContext(ctx, "certbot", args...).Run(); err != nil {
+		sh.Write("stderr", "certbot could not issue a certificate (site still reachable on http). "+
+			"Check that the domain's DNS points here and port 80 is open.")
+		return
+	}
+	sh.System("HTTPS provisioned via certbot for " + serverName)
+}
+
 // ── Caddy backend (clean servers): automatic HTTPS, one snippet per app ─────────
 
 func configureCaddy(ctx context.Context, sh *LogShipper, appSlug string, hostPort int, domains []string) {
@@ -167,21 +273,6 @@ server {
 		return
 	}
 	sh.System("Routing live via nginx: " + serverName)
-
 	// Provision HTTPS via certbot (best-effort — app is already reachable on http).
-	if _, err := exec.LookPath("certbot"); err != nil {
-		sh.System("certbot not installed — app served over HTTP. Install certbot for HTTPS.")
-		return
-	}
-	args := []string{"--nginx", "--non-interactive", "--agree-tos",
-		"--register-unsafely-without-email", "--redirect"}
-	for _, d := range domains {
-		args = append(args, "-d", d)
-	}
-	if err := exec.CommandContext(ctx, "certbot", args...).Run(); err != nil {
-		sh.Write("stderr", "certbot could not issue a certificate (app still reachable on http). "+
-			"Check that the domain's DNS points here and port 80 is open.")
-		return
-	}
-	sh.System("HTTPS provisioned via certbot for " + serverName)
+	provisionCertbot(ctx, sh, domains, serverName)
 }

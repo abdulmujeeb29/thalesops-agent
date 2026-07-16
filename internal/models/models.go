@@ -66,13 +66,18 @@ type StreamLogsPayload struct {
 // Parsed defensively from the generic map the backend sends.
 type DeployPayload struct {
 	DeploymentID string
+	AppType      string // "SERVICE" (default, container) or "STATIC" (files via proxy)
 	AppSlug      string
 	RepoFullName string
 	CloneURL     string
 	Branch       string
 	Commit       string // if set, check out this exact commit instead of branch HEAD
-	ImageTag     string // versioned image tag: thalesops/<slug>:<tag> (kept for rollback)
+	ImageTag     string // SERVICE: versioned image tag. STATIC: the release-folder id.
 	BuildMethod  string
+
+	// STATIC only: optional build step + which folder to publish.
+	BuildCommand string // e.g. "npm run build"; empty = no build (plain HTML)
+	PublishDir   string // relative to repo root; empty = repo root
 	Port         int      // container's internal port
 	HostPort     int      // localhost port to publish on (the proxy routes here)
 	Domains      []string // hostnames the reverse proxy should route to this app
