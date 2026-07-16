@@ -31,7 +31,9 @@ func ExecuteStreamLogs(rawPayload map[string]interface{}, flush FlushFunc) model
 	sh := NewLogShipper(flush, nil)
 	defer sh.Close()
 
-	container := containerName(p.AppSlug)
+	// Blue-green containers have versioned names — find the RUNNING one by its
+	// app label, falling back to the legacy fixed name for pre-blue-green apps.
+	container := findLiveContainer(p.AppSlug)
 
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()

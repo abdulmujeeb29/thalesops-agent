@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,33 +16,35 @@ import (
 // during the pre-swap smoke test before declaring it unhealthy.
 const HealthCheckTimeout = 60 * time.Second
 
-// deployContainer performs a HEALTH-GATED swap:
+// deployContainer brings a new image live without downtime.
 //
-//	1. start the new image as a throwaway container on a random localhost port
-//	2. verify it actually comes up (the currently-running container is untouched)
-//	3. only if healthy → swap it in on the real port (brief blip, validated image)
-//	4. if unhealthy → leave the old container running and fail the deploy
+// When a proxy fronts the app (Caddy/nginx + domains) it does a BLUE-GREEN
+// swap: the new container starts on a fresh random localhost port NEXT TO the
+// old one, is health-checked in place, and traffic moves via a graceful proxy
+// reload — at no instant is nothing listening. Only then is the old container
+// retired. Zero blip.
 //
-// The key guarantee: a broken build/env can never take down the running app —
-// the old container is only removed once the new one is proven to start.
+// Without a proxy (no domains, port-less worker, or an unmanaged :443) it falls
+// back to verify-then-swap on the fixed port: smoke-test a throwaway container,
+// then rm old → run new. Safe (a broken image never goes live) but with a brief
+// boot-time blip — there's nothing to flip without a proxy in front.
 func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, domains []string, healthPath string) (int, error) {
+	backend := detectProxyBackend()
+	if backend != "none" && port > 0 && len(domains) > 0 {
+		return blueGreenSwap(ctx, sh, backend, appSlug, image, port, env, domains, healthPath)
+	}
+
+	// ── Fallback path (no proxy to flip) ──────────────────────────────────────
 	if err := smokeTest(ctx, sh, appSlug, image, port, env, healthPath); err != nil {
 		// Old container untouched — no downtime from a bad deploy.
 		return 1, err
 	}
 	sh.System("Health check passed — swapping to the new version…")
-	// Pick the proxy backend by what already fronts this server (Caddy on a clean
-	// box, nginx if it's already there). Only bind localhost if a backend will
-	// actually route to us; otherwise publish the host port so the app stays reachable.
-	backend := detectProxyBackend()
-	useProxy := backend != "none" && hostPort > 0 && len(domains) > 0
-	code, err := runContainer(ctx, sh, appSlug, image, port, hostPort, env, useProxy)
+	code, err := runContainer(ctx, sh, appSlug, image, port, hostPort, env, false)
 	if err != nil {
 		return code, err
 	}
-	if useProxy {
-		configureProxy(ctx, sh, backend, appSlug, hostPort, domains)
-	} else if len(domains) > 0 && hostPort > 0 {
+	if len(domains) > 0 && hostPort > 0 {
 		// User wanted a domain but we have no managed proxy on this server — explain.
 		owner := portOwner(443)
 		reason := "no reverse proxy is set up"
@@ -55,6 +58,120 @@ func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string,
 		))
 	}
 	return 0, nil
+}
+
+// blueGreenSwap runs the zero-downtime path:
+//
+//	1. start the NEW container on a fresh random localhost port (old untouched)
+//	2. health-gate it in place (TCP + optional HTTP path) — this IS the runtime
+//	   container, so the image boots exactly once
+//	3. flip the proxy upstream to the new port (graceful reload: in-flight
+//	   requests finish on the old container, new requests hit the new one)
+//	4. only after a successful flip: retire the old container(s)
+//
+// A failure at any step before 4 removes the new container and leaves the old
+// one serving — same guarantee as always, now with zero downtime on success.
+func blueGreenSwap(ctx context.Context, sh *LogShipper, backend, appSlug, image string, port int, env map[string]string, domains []string, healthPath string) (int, error) {
+	newName := versionedContainerName(appSlug)
+
+	envFile, err := writeEnvFile(env)
+	if err != nil {
+		return 1, fmt.Errorf("could not write env file: %w", err)
+	}
+	if envFile != "" {
+		defer os.Remove(envFile)
+	}
+
+	// discard removes the not-yet-live new container after a failure.
+	discard := func() {
+		_ = exec.CommandContext(context.Background(), "docker", "rm", "-f", newName).Run()
+	}
+
+	sh.System("Starting the new version alongside the current one…")
+	args := []string{"run", "-d", "--name", newName,
+		"--label", appLabel(appSlug), "--restart", "unless-stopped"}
+	if envFile != "" {
+		args = append(args, "--env-file", envFile)
+	}
+	// 127.0.0.1:: → Docker picks a free localhost port; the proxy is the public entry.
+	args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d", port), image)
+	if code, err := runStreaming(ctx, sh, "docker", args...); err != nil {
+		discard()
+		return code, fmt.Errorf("could not start the new container (exit %d): %w", code, err)
+	}
+
+	hostPort, err := assignedHostPort(ctx, newName, port)
+	if err != nil {
+		discard()
+		return 1, fmt.Errorf("could not determine the new container's port: %w", err)
+	}
+	if healthPath != "" {
+		sh.System(fmt.Sprintf("Waiting for a healthy response on %s…", healthPath))
+	}
+	if err := waitForPort(ctx, sh, newName, hostPort, HealthCheckTimeout, healthPath); err != nil {
+		discard()
+		return 1, err // "keeping the current version running" is in the message
+	}
+
+	sh.System("New version healthy — switching traffic (zero downtime)…")
+	hp, _ := strconv.Atoi(hostPort)
+	if err := configureProxy(ctx, sh, backend, appSlug, hp, domains); err != nil {
+		// The proxy still points at the OLD container, which is untouched and
+		// serving. Drop the new one and fail the deploy rather than leave two
+		// versions running with stale routing.
+		discard()
+		return 1, fmt.Errorf("could not switch traffic to the new version — keeping the current one: %w", err)
+	}
+
+	retireOldContainers(ctx, sh, appSlug, newName)
+	sh.System("Traffic switched — deploy completed with zero downtime.")
+	return 0, nil
+}
+
+// versionedContainerName gives each deploy its own container name so old and
+// new can run side by side during the swap.
+func versionedContainerName(appSlug string) string {
+	return fmt.Sprintf("%s-%d", containerName(appSlug), time.Now().UnixMilli())
+}
+
+// appLabel tags every blue-green container so old versions (and strays from
+// interrupted deploys) can be found and retired reliably.
+func appLabel(appSlug string) string {
+	return "thalesops.app=" + sanitizeName(appSlug)
+}
+
+// findLiveContainer returns the name of the app's RUNNING container: the
+// labeled blue-green container if one is up, else the legacy fixed name.
+func findLiveContainer(appSlug string) string {
+	out, err := exec.Command("docker", "ps",
+		"--filter", "label="+appLabel(appSlug), "--format", "{{.Names}}").Output()
+	if err == nil {
+		if name := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]); name != "" {
+			return name
+		}
+	}
+	return containerName(appSlug)
+}
+
+// retireOldContainers removes every container belonging to this app EXCEPT the
+// one that just went live — previous versions, strays from crashed deploys, and
+// the legacy fixed-name container from pre-blue-green agent versions.
+func retireOldContainers(ctx context.Context, sh *LogShipper, appSlug, keepName string) {
+	out, err := exec.CommandContext(ctx, "docker", "ps", "-a",
+		"--filter", "label="+appLabel(appSlug), "--format", "{{.Names}}").Output()
+	if err == nil {
+		for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			name = strings.TrimSpace(name)
+			if name == "" || name == keepName {
+				continue
+			}
+			_ = exec.CommandContext(ctx, "docker", "rm", "-f", name).Run()
+		}
+	}
+	// Legacy fixed-name container (pre-blue-green agents) has no label.
+	if legacy := containerName(appSlug); legacy != keepName {
+		_ = exec.CommandContext(ctx, "docker", "rm", "-f", legacy).Run()
+	}
 }
 
 // smokeTest starts a throwaway container from the given image on a random

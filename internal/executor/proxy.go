@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -68,18 +69,20 @@ func portOwner(port int) string {
 }
 
 // configureProxy routes the app's domains to its localhost port using whichever
-// backend fronts this server. Best-effort: a proxy hiccup must not fail an
-// otherwise-successful deploy (the container is already running + health-checked).
-func configureProxy(ctx context.Context, sh *LogShipper, backend, appSlug string, hostPort int, domains []string) {
+// backend fronts this server. Returns an error when the route could NOT be
+// applied — the blue-green swap uses that to keep the old container serving
+// instead of retiring it under stale routing.
+func configureProxy(ctx context.Context, sh *LogShipper, backend, appSlug string, hostPort int, domains []string) error {
 	if len(domains) == 0 || hostPort <= 0 {
-		return
+		return nil
 	}
 	switch backend {
 	case "caddy":
-		configureCaddy(ctx, sh, appSlug, hostPort, domains)
+		return configureCaddy(ctx, sh, appSlug, hostPort, domains)
 	case "nginx":
-		configureNginx(ctx, sh, appSlug, hostPort, domains)
+		return configureNginx(ctx, sh, appSlug, hostPort, domains)
 	}
+	return nil
 }
 
 // configureStaticProxy routes the app's domains to a static file server rooted
@@ -190,10 +193,10 @@ func provisionCertbot(ctx context.Context, sh *LogShipper, domains []string, ser
 
 // ── Caddy backend (clean servers): automatic HTTPS, one snippet per app ─────────
 
-func configureCaddy(ctx context.Context, sh *LogShipper, appSlug string, hostPort int, domains []string) {
+func configureCaddy(ctx context.Context, sh *LogShipper, appSlug string, hostPort int, domains []string) error {
 	if err := os.MkdirAll(caddySitesDir, 0o755); err != nil {
 		sh.Write("stderr", "could not create proxy config dir: "+err.Error())
-		return
+		return err
 	}
 	// The @dotfiles matcher refuses probes for secret dotfiles (.env, .git, ...)
 	// before they reach the app. Caddy's regexes are RE2 (no lookahead), so the
@@ -211,13 +214,14 @@ func configureCaddy(ctx context.Context, sh *LogShipper, appSlug string, hostPor
 	path := filepath.Join(caddySitesDir, sanitizeName(appSlug)+".caddy")
 	if err := os.WriteFile(path, []byte(block), 0o644); err != nil {
 		sh.Write("stderr", "could not write proxy config: "+err.Error())
-		return
+		return err
 	}
 	if err := reloadCaddy(ctx); err != nil {
 		sh.Write("stderr", "proxy reload failed: "+err.Error())
-		return
+		return err
 	}
 	sh.System("Routing live via Caddy (HTTPS auto-provisioned): " + strings.Join(domains, ", "))
+	return nil
 }
 
 func reloadCaddy(ctx context.Context) error {
@@ -229,12 +233,43 @@ func reloadCaddy(ctx context.Context) error {
 
 // ── nginx backend (servers already running nginx): server block + certbot ───────
 
-func configureNginx(ctx context.Context, sh *LogShipper, appSlug string, hostPort int, domains []string) {
+// nginxProxyPassRe matches the upstream line so a redeploy can re-point the
+// EXISTING config (including certbot's added 443 block) at the new port instead
+// of rewriting the file — which would clobber the HTTPS config and briefly drop
+// TLS while certbot re-ran. Port swap + graceful reload = true zero-blip.
+var nginxProxyPassRe = regexp.MustCompile(`proxy_pass http://127\.0\.0\.1:\d+;`)
+
+func configureNginx(ctx context.Context, sh *LogShipper, appSlug string, hostPort int, domains []string) error {
 	if err := os.MkdirAll(nginxConfDir, 0o755); err != nil {
 		sh.Write("stderr", "could not access nginx config dir: "+err.Error())
-		return
+		return err
 	}
 	serverName := strings.Join(domains, " ")
+	path := filepath.Join(nginxConfDir, "thalesops-"+sanitizeName(appSlug)+".conf")
+
+	// Redeploy: the config (possibly certbot-enhanced with a 443 block) already
+	// exists → just re-point every proxy_pass at the new port, preserving HTTPS.
+	if existing, err := os.ReadFile(path); err == nil && nginxProxyPassRe.Match(existing) {
+		updated := nginxProxyPassRe.ReplaceAll(existing,
+			[]byte(fmt.Sprintf("proxy_pass http://127.0.0.1:%d;", hostPort)))
+		if err := os.WriteFile(path, updated, 0o644); err != nil {
+			sh.Write("stderr", "could not update nginx config: "+err.Error())
+			return err
+		}
+		if err := exec.CommandContext(ctx, "nginx", "-t").Run(); err != nil {
+			_ = os.WriteFile(path, existing, 0o644) // restore the working config
+			sh.Write("stderr", "nginx config test failed — routing left unchanged.")
+			return err
+		}
+		if err := exec.CommandContext(ctx, "systemctl", "reload", "nginx").Run(); err != nil {
+			sh.Write("stderr", "nginx reload failed: "+err.Error())
+			return err
+		}
+		sh.System("Routing updated via nginx: " + serverName)
+		return nil
+	}
+
+	// First deploy for this app: write the full server block, then certbot.
 	block := fmt.Sprintf(`# Managed by ThalesOps
 server {
     listen 80;
@@ -257,22 +292,22 @@ server {
 }
 `, serverName, hostPort)
 
-	path := filepath.Join(nginxConfDir, "thalesops-"+sanitizeName(appSlug)+".conf")
 	if err := os.WriteFile(path, []byte(block), 0o644); err != nil {
 		sh.Write("stderr", "could not write nginx config: "+err.Error())
-		return
+		return err
 	}
 	// Validate before reloading so we never break the user's existing nginx.
 	if err := exec.CommandContext(ctx, "nginx", "-t").Run(); err != nil {
 		os.Remove(path) // back out our snippet
 		sh.Write("stderr", "nginx config test failed — leaving existing nginx untouched.")
-		return
+		return err
 	}
 	if err := exec.CommandContext(ctx, "systemctl", "reload", "nginx").Run(); err != nil {
 		sh.Write("stderr", "nginx reload failed: "+err.Error())
-		return
+		return err
 	}
 	sh.System("Routing live via nginx: " + serverName)
 	// Provision HTTPS via certbot (best-effort — app is already reachable on http).
 	provisionCertbot(ctx, sh, domains, serverName)
+	return nil
 }

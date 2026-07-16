@@ -163,13 +163,15 @@ func pruneOldImages(ctx context.Context, sh *LogShipper, appSlug string, keep in
 }
 
 // runContainer replaces the app's container with a fresh one from its existing
-// image, injecting env via a temp --env-file. Shared by deploy (after build) and
-// restart (reuse build). Returns the exit code and any error.
+// image, injecting env via a temp --env-file. FALLBACK path only (no proxy to
+// flip → fixed name, brief blip); proxied apps go through blueGreenSwap instead.
 func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, useProxy bool) (int, error) {
 	container := containerName(appSlug)
 
-	// Replace any previous container with the same name (ignore errors if absent).
+	// Replace any previous container: the fixed-name one AND any labeled
+	// blue-green versions left from when this app was proxied.
 	_, _ = runStreaming(ctx, sh, "docker", "rm", "-f", container)
+	retireOldContainers(ctx, sh, appSlug, container)
 
 	envFile, err := writeEnvFile(env)
 	if err != nil {
