@@ -1,0 +1,131 @@
+name: CI Quality Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Test and static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Verify formatting
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+        run: |
+          base_sha="${PR_BASE_SHA:-$PUSH_BASE_SHA}"
+          go_files=()
+
+          if [[ -n "$base_sha" && ! "$base_sha" =~ ^0+$ ]] && \
+             git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            while IFS= read -r -d '' file; do
+              go_files+=("$file")
+            done < <(git diff --name-only --diff-filter=ACMR -z \
+              "$base_sha" "$GITHUB_SHA" -- '*.go')
+          else
+            while IFS= read -r -d '' file; do
+              go_files+=("$file")
+            done < <(git ls-files -z '*.go')
+          fi
+
+          if (( ${#go_files[@]} == 0 )); then
+            echo "No Go files changed; formatting check skipped."
+            exit 0
+          fi
+
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          failed=0
+
+          for file in "${go_files[@]}"; do
+            normalized="$scratch/normalized.go"
+            formatted="$scratch/formatted.go"
+
+            # The repository currently contains legacy CRLF blobs. Normalize
+            # line endings before comparison so this gate can be introduced
+            # without an unrelated repository-wide line-ending rewrite.
+            sed 's/\r$//' "$file" > "$normalized"
+            gofmt "$normalized" > "$formatted"
+
+            if ! cmp -s "$normalized" "$formatted"; then
+              echo "::error file=$file::File is not gofmt-formatted"
+              diff -u --label "$file" --label "$file (gofmt)" \
+                "$normalized" "$formatted" || true
+              failed=1
+            fi
+          done
+
+          exit "$failed"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with race detector
+        run: go test -v -race ./...
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+
+      - name: Run staticcheck
+        run: staticcheck ./...
+
+  cross-build:
+    name: Build linux/${{ matrix.goarch }}
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch:
+          - amd64
+          - arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build linux/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o "${{ runner.temp }}/thalesops-agent-linux-${GOARCH}" .
