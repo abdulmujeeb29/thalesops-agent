@@ -28,10 +28,10 @@ const HealthCheckTimeout = 60 * time.Second
 // back to verify-then-swap on the fixed port: smoke-test a throwaway container,
 // then rm old → run new. Safe (a broken image never goes live) but with a brief
 // boot-time blip — there's nothing to flip without a proxy in front.
-func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, domains []string, healthPath string) (int, error) {
+func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, domains, networks []string, healthPath string) (int, error) {
 	backend := detectProxyBackend()
 	if backend != "none" && port > 0 && len(domains) > 0 {
-		return blueGreenSwap(ctx, sh, backend, appSlug, image, port, env, domains, healthPath)
+		return blueGreenSwap(ctx, sh, backend, appSlug, image, port, env, domains, networks, healthPath)
 	}
 
 	// ── Fallback path (no proxy to flip) ──────────────────────────────────────
@@ -40,7 +40,7 @@ func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string,
 		return 1, err
 	}
 	sh.System("Health check passed — swapping to the new version…")
-	code, err := runContainer(ctx, sh, appSlug, image, port, hostPort, env, false)
+	code, err := runContainer(ctx, sh, appSlug, image, port, hostPort, env, false, networks)
 	if err != nil {
 		return code, err
 	}
@@ -71,7 +71,7 @@ func deployContainer(ctx context.Context, sh *LogShipper, appSlug, image string,
 //
 // A failure at any step before 4 removes the new container and leaves the old
 // one serving — same guarantee as always, now with zero downtime on success.
-func blueGreenSwap(ctx context.Context, sh *LogShipper, backend, appSlug, image string, port int, env map[string]string, domains []string, healthPath string) (int, error) {
+func blueGreenSwap(ctx context.Context, sh *LogShipper, backend, appSlug, image string, port int, env map[string]string, domains, networks []string, healthPath string) (int, error) {
 	newName := versionedContainerName(appSlug)
 
 	envFile, err := writeEnvFile(env)
@@ -90,6 +90,7 @@ func blueGreenSwap(ctx context.Context, sh *LogShipper, backend, appSlug, image 
 	sh.System("Starting the new version alongside the current one…")
 	args := []string{"run", "-d", "--name", newName,
 		"--label", appLabel(appSlug), "--restart", "unless-stopped"}
+	args = append(args, hostGatewayArgs()...)
 	if envFile != "" {
 		args = append(args, "--env-file", envFile)
 	}
@@ -98,6 +99,13 @@ func blueGreenSwap(ctx context.Context, sh *LogShipper, backend, appSlug, image 
 	if code, err := runStreaming(ctx, sh, "docker", args...); err != nil {
 		discard()
 		return code, fmt.Errorf("could not start the new container (exit %d): %w", code, err)
+	}
+
+	// Join attached-database networks BEFORE the health check, so the app can
+	// reach its DB during startup/migrations.
+	if err := connectNetworks(ctx, sh, newName, networks); err != nil {
+		discard()
+		return 1, err
 	}
 
 	hostPort, err := assignedHostPort(ctx, newName, port)

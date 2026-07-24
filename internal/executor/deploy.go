@@ -98,7 +98,7 @@ func ExecuteDeploy(rawPayload map[string]interface{}, timeout time.Duration, flu
 
 	// ── 4. Run (health-gated swap: verify new container before retiring old) ──
 	sh.System("Starting container…")
-	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.HostPort, p.Env, p.Domains, p.HealthCheckPath); err != nil {
+	if code, err := deployContainer(ctx, sh, p.AppSlug, image, p.Port, p.HostPort, p.Env, p.Domains, p.Networks, p.HealthCheckPath); err != nil {
 		return fail(code, err.Error())
 	}
 
@@ -165,7 +165,7 @@ func pruneOldImages(ctx context.Context, sh *LogShipper, appSlug string, keep in
 // runContainer replaces the app's container with a fresh one from its existing
 // image, injecting env via a temp --env-file. FALLBACK path only (no proxy to
 // flip → fixed name, brief blip); proxied apps go through blueGreenSwap instead.
-func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, useProxy bool) (int, error) {
+func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, port, hostPort int, env map[string]string, useProxy bool, networks []string) (int, error) {
 	container := containerName(appSlug)
 
 	// Replace any previous container: the fixed-name one AND any labeled
@@ -182,6 +182,7 @@ func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, po
 	}
 
 	runArgs := []string{"run", "-d", "--name", container, "--restart", "unless-stopped"}
+	runArgs = append(runArgs, hostGatewayArgs()...)
 	if envFile != "" {
 		runArgs = append(runArgs, "--env-file", envFile)
 	}
@@ -197,7 +198,40 @@ func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, po
 	}
 	runArgs = append(runArgs, image)
 
-	return runStreaming(ctx, sh, "docker", runArgs...)
+	if code, err := runStreaming(ctx, sh, "docker", runArgs...); err != nil {
+		return code, err
+	}
+	if err := connectNetworks(ctx, sh, container, networks); err != nil {
+		return 1, err
+	}
+	return 0, nil
+}
+
+// hostGatewayArgs makes the server's host reachable from inside every app
+// container as `host.docker.internal` (needs an explicit flag on Linux). This
+// lets an app connect to a database the user installed on the host itself —
+// e.g. DATABASE_URL=postgresql://…@host.docker.internal:5432/db. It's a no-op
+// for apps that don't use the name (just a hosts entry — no ports, no exposure).
+// The user's host DB must still listen on the bridge + allow the docker subnet.
+func hostGatewayArgs() []string {
+	return []string{"--add-host", "host.docker.internal:host-gateway"}
+}
+
+// connectNetworks joins a container to each attached-database network so it can
+// reach those databases by container name over Docker's embedded DNS.
+func connectNetworks(ctx context.Context, sh *LogShipper, container string, networks []string) error {
+	for _, net := range networks {
+		if net == "" {
+			continue
+		}
+		// Ignore "already connected"; surface a real failure (the app can't
+		// reach its database without the network).
+		out, err := exec.CommandContext(ctx, "docker", "network", "connect", net, container).CombinedOutput()
+		if err != nil && !strings.Contains(string(out), "already exists") {
+			return fmt.Errorf("could not attach database network %s: %s", net, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 // runMigrations applies database migrations by running the migration command in
@@ -303,6 +337,13 @@ func parseDeployPayload(m map[string]interface{}) models.DeployPayload {
 		for _, d := range domains {
 			if s := asString(d); s != "" {
 				p.Domains = append(p.Domains, s)
+			}
+		}
+	}
+	if nets, ok := m["networks"].([]interface{}); ok {
+		for _, n := range nets {
+			if s := asString(n); s != "" {
+				p.Networks = append(p.Networks, s)
 			}
 		}
 	}

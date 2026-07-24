@@ -7,10 +7,11 @@ type RegisterRequest struct {
 }
 
 type HeartbeatRequest struct {
-	OSInfo       map[string]string      `json:"os_info,omitempty"`
-	Capabilities map[string]interface{} `json:"capabilities,omitempty"`
-	Metrics      map[string]interface{} `json:"metrics,omitempty"`
-	AgentVersion string                 `json:"agent_version,omitempty"`
+	OSInfo            map[string]string      `json:"os_info,omitempty"`
+	Capabilities      map[string]interface{} `json:"capabilities,omitempty"`
+	Metrics           map[string]interface{} `json:"metrics,omitempty"`
+	AgentVersion      string                 `json:"agent_version,omitempty"`
+	DetectedDatabases []map[string]string    `json:"detected_databases,omitempty"`
 }
 
 type AgentCommand struct {
@@ -81,6 +82,7 @@ type DeployPayload struct {
 	Port         int      // container's internal port
 	HostPort     int      // localhost port to publish on (the proxy routes here)
 	Domains      []string // hostnames the reverse proxy should route to this app
+	Networks     []string // Docker networks the app container must join (attached DBs)
 
 	// Intelligent deployment (detection-driven, user-confirmed on the backend):
 	RunMigrations    bool   // run MigrationCommand before swapping in the new build
@@ -88,4 +90,20 @@ type DeployPayload struct {
 	HealthCheckPath  string // HTTP path polled for a 2xx before go-live ('' = TCP-only)
 
 	Env map[string]string
+}
+
+// DatabasePayload is the typed view of a PROVISION_DB / DELETE_DB command.
+type DatabasePayload struct {
+	DatabaseID    string
+	Engine        string // POSTGRES / REDIS / MYSQL
+	Image         string // e.g. "postgres"
+	Version       string // e.g. "16"
+	ContainerName string
+	VolumeName    string
+	NetworkName   string
+	InternalPort  int
+	DBUser        string
+	DBName        string
+	DBPassword    string
+	DestroyData   bool // DELETE_DB: also remove the data volume
 }

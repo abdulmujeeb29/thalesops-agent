@@ -252,8 +252,9 @@ func processHeartbeat(client *api.Client, sink commandSink, metrics map[string]i
 	fmt.Printf("Heartbeat: %v\n", metrics)
 
 	resp, err := client.Heartbeat(models.HeartbeatRequest{
-		Metrics:      metrics,
-		AgentVersion: Version,
+		Metrics:           metrics,
+		AgentVersion:      Version,
+		DetectedDatabases: system.DetectedDatabasesWire(),
 	})
 	if err != nil {
 		log.Printf("Heartbeat failed: %v", err)
@@ -334,6 +335,14 @@ func dispatchCommand(client commandSink, cmd models.AgentCommand, cfg *config.Co
 			appID, _ := cmd.Payload["application_id"].(string)
 			result = executor.ExecuteStreamLogs(cmd.Payload, func(lines []models.LogLine) error {
 				return client.SubmitAppLogs(appID, lines)
+			})
+		case "PROVISION_DB":
+			result = executor.ExecuteProvisionDB(cmd.Payload, timeout, func(lines []models.LogLine) error {
+				return client.SubmitLogs(cmd.ID, lines)
+			})
+		case "DELETE_DB":
+			result = executor.ExecuteDeleteDB(cmd.Payload, timeout, func(lines []models.LogLine) error {
+				return client.SubmitLogs(cmd.ID, lines)
 			})
 		default:
 			result = models.CommandResultRequest{
