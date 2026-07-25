@@ -128,15 +128,20 @@ func ManagedDatabaseHealthWire() []map[string]string {
 }
 
 // managedDBProbe runs the engine's readiness check inside the container.
+//
+// Crucially it probes with the container's OWN credentials (read from its env)
+// rather than the default OS user — a bare `pg_isready` defaults to user "root",
+// which isn't a Postgres role, so Postgres logs a FATAL on every 60s heartbeat.
+// Using the real user keeps the check silent in the database's own logs.
 func managedDBProbe(ctx context.Context, name, image string) bool {
 	var probe []string
 	switch {
 	case strings.Contains(image, "redis"):
 		probe = []string{"exec", name, "redis-cli", "ping"}
 	case strings.Contains(image, "mysql"), strings.Contains(image, "mariadb"):
-		probe = []string{"exec", name, "mysqladmin", "ping"}
+		probe = []string{"exec", name, "sh", "-c", `mysqladmin ping -u root -p"$MYSQL_ROOT_PASSWORD" 2>/dev/null`}
 	default: // postgres
-		probe = []string{"exec", name, "pg_isready"}
+		probe = []string{"exec", name, "sh", "-c", `pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q`}
 	}
 	return exec.CommandContext(ctx, "docker", probe...).Run() == nil
 }
