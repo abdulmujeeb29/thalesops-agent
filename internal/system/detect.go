@@ -94,3 +94,49 @@ func DetectedDatabasesWire() []map[string]string {
 	}
 	return wire
 }
+
+// ManagedDatabaseHealthWire probes each ThalesOps-managed database container
+// (labeled thalesops.db=<id>) and reports whether it's actually accepting
+// connections right now — so the dashboard's "RUNNING" reflects live state, not
+// just "provisioned once". Reported each heartbeat: [{database_id, status}].
+func ManagedDatabaseHealthWire() []map[string]string {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	// id | container-name | image (running containers only)
+	out, err := exec.CommandContext(ctx, "docker", "ps",
+		"--filter", "label=thalesops.db",
+		"--format", "{{.Label \"thalesops.db\"}}|{{.Names}}|{{.Image}}").Output()
+	if err != nil {
+		return nil
+	}
+
+	var health []map[string]string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) < 3 || strings.TrimSpace(parts[0]) == "" {
+			continue
+		}
+		id, name, image := parts[0], parts[1], strings.ToLower(parts[2])
+		status := "STOPPED"
+		if managedDBProbe(ctx, name, image) {
+			status = "RUNNING"
+		}
+		health = append(health, map[string]string{"database_id": id, "status": status})
+	}
+	return health
+}
+
+// managedDBProbe runs the engine's readiness check inside the container.
+func managedDBProbe(ctx context.Context, name, image string) bool {
+	var probe []string
+	switch {
+	case strings.Contains(image, "redis"):
+		probe = []string{"exec", name, "redis-cli", "ping"}
+	case strings.Contains(image, "mysql"), strings.Contains(image, "mariadb"):
+		probe = []string{"exec", name, "mysqladmin", "ping"}
+	default: // postgres
+		probe = []string{"exec", name, "pg_isready"}
+	}
+	return exec.CommandContext(ctx, "docker", probe...).Run() == nil
+}

@@ -12,6 +12,7 @@ type HeartbeatRequest struct {
 	Metrics           map[string]interface{} `json:"metrics,omitempty"`
 	AgentVersion      string                 `json:"agent_version,omitempty"`
 	DetectedDatabases []map[string]string    `json:"detected_databases,omitempty"`
+	ManagedDBHealth   []map[string]string    `json:"managed_database_health,omitempty"`
 }
 
 type AgentCommand struct {
@@ -59,6 +60,20 @@ type AppLogBatch struct {
 type StreamLogsPayload struct {
 	ApplicationID   string
 	AppSlug         string
+	Tail            int
+	DurationSeconds int
+}
+
+// DbLogBatch is the body sent to the agent database-log endpoint.
+type DbLogBatch struct {
+	DatabaseID string    `json:"database_id"`
+	Logs       []LogLine `json:"logs"`
+}
+
+// StreamDbLogsPayload is the typed view of a STREAM_DB_LOGS command's payload.
+type StreamDbLogsPayload struct {
+	DatabaseID      string
+	ContainerName   string
 	Tail            int
 	DurationSeconds int
 }

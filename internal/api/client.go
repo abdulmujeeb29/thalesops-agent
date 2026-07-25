@@ -128,3 +128,20 @@ func (c *Client) SubmitAppLogs(applicationID string, lines []models.LogLine) err
 	}
 	return nil
 }
+
+func (c *Client) SubmitDBLogs(databaseID string, lines []models.LogLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	resp, err := c.doRequest("POST", "/api/v1/agent/db-logs/",
+		models.DbLogBatch{DatabaseID: databaseID, Logs: lines})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("submitting db logs failed with status: %d", resp.StatusCode)
+	}
+	return nil
+}

@@ -45,6 +45,7 @@ type commandSink interface {
 	SubmitResult(commandID string, result models.CommandResultRequest) error
 	SubmitLogs(commandID string, lines []models.LogLine) error
 	SubmitAppLogs(applicationID string, lines []models.LogLine) error
+	SubmitDBLogs(databaseID string, lines []models.LogLine) error
 }
 
 // transport prefers the WebSocket (instant, one connection) and transparently
@@ -80,6 +81,12 @@ func (t *transport) SubmitAppLogs(appID string, lines []models.LogLine) error {
 		}
 	}
 	return t.http.SubmitAppLogs(appID, lines)
+}
+
+// SubmitDBLogs ships over HTTP (the browser receives them via SSE regardless of
+// how they reach the backend — no WS frame needed for this path).
+func (t *transport) SubmitDBLogs(dbID string, lines []models.LogLine) error {
+	return t.http.SubmitDBLogs(dbID, lines)
 }
 
 func main() {
@@ -255,6 +262,7 @@ func processHeartbeat(client *api.Client, sink commandSink, metrics map[string]i
 		Metrics:           metrics,
 		AgentVersion:      Version,
 		DetectedDatabases: system.DetectedDatabasesWire(),
+		ManagedDBHealth:   system.ManagedDatabaseHealthWire(),
 	})
 	if err != nil {
 		log.Printf("Heartbeat failed: %v", err)
@@ -343,6 +351,11 @@ func dispatchCommand(client commandSink, cmd models.AgentCommand, cfg *config.Co
 		case "DELETE_DB":
 			result = executor.ExecuteDeleteDB(cmd.Payload, timeout, func(lines []models.LogLine) error {
 				return client.SubmitLogs(cmd.ID, lines)
+			})
+		case "STREAM_DB_LOGS":
+			dbID, _ := cmd.Payload["database_id"].(string)
+			result = executor.ExecuteStreamDBLogs(cmd.Payload, func(lines []models.LogLine) error {
+				return client.SubmitDBLogs(dbID, lines)
 			})
 		default:
 			result = models.CommandResultRequest{
