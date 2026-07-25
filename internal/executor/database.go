@@ -144,7 +144,10 @@ func dbProbe(ctx context.Context, p models.DatabasePayload) bool {
 		probe = []string{"exec", p.ContainerName, "mysqladmin", "ping", "-h", "127.0.0.1",
 			"-u", "root", "-p" + p.DBPassword}
 	default: // POSTGRES
-		probe = []string{"exec", p.ContainerName, "pg_isready", "-U", p.DBUser}
+		// Pass BOTH -U and -d: with -U but no -d, pg_isready defaults the database
+		// to the username (which doesn't exist), making Postgres log a spurious
+		// FATAL "database <user> does not exist" during provisioning.
+		probe = []string{"exec", p.ContainerName, "pg_isready", "-U", p.DBUser, "-d", p.DBName, "-q"}
 	}
 	return exec.CommandContext(ctx, "docker", probe...).Run() == nil
 }
