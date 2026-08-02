@@ -59,7 +59,7 @@ func StreamDiscoveryLogs(ctx context.Context, payload models.StreamDiscoveryLogs
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			flush(models.LogLine{Stream: "stdout", Content: scanner.Text()})
+			_ = flush([]models.LogLine{{Stream: "stdout", Content: scanner.Text()}})
 		}
 	}()
 
@@ -67,7 +67,7 @@ func StreamDiscoveryLogs(ctx context.Context, payload models.StreamDiscoveryLogs
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			flush(models.LogLine{Stream: "stderr", Content: scanner.Text()})
+			_ = flush([]models.LogLine{{Stream: "stderr", Content: scanner.Text()}})
 		}
 	}()
 
