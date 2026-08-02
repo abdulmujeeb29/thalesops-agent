@@ -13,6 +13,7 @@ type HeartbeatRequest struct {
 	AgentVersion      string                 `json:"agent_version,omitempty"`
 	DetectedDatabases []map[string]string    `json:"detected_databases,omitempty"`
 	ManagedDBHealth   []map[string]string    `json:"managed_database_health,omitempty"`
+	DetectedServices  []map[string]interface{} `json:"detected_services,omitempty"`
 }
 
 type AgentCommand struct {
@@ -74,6 +75,22 @@ type DbLogBatch struct {
 type StreamDbLogsPayload struct {
 	DatabaseID      string
 	ContainerName   string
+	Tail            int
+	DurationSeconds int
+}
+
+// DiscoveryLogBatch is the body sent to the agent discovery-log endpoint.
+type DiscoveryLogBatch struct {
+	DiscoveryID string    `json:"discovery_id"`
+	Logs        []LogLine `json:"logs"`
+}
+
+// StreamDiscoveryLogsPayload is the typed view of a STREAM_DISC_LOGS command's payload.
+type StreamDiscoveryLogsPayload struct {
+	DiscoveryID     string
+	Source          string // "docker" or "systemd"
+	ContainerName   string // docker only
+	UnitName        string // systemd only
 	Tail            int
 	DurationSeconds int
 }

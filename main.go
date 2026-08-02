@@ -46,6 +46,7 @@ type commandSink interface {
 	SubmitLogs(commandID string, lines []models.LogLine) error
 	SubmitAppLogs(applicationID string, lines []models.LogLine) error
 	SubmitDBLogs(databaseID string, lines []models.LogLine) error
+	SubmitDiscoveryLogs(discoveryID string, lines []models.LogLine) error
 }
 
 // transport prefers the WebSocket (instant, one connection) and transparently
@@ -81,6 +82,15 @@ func (t *transport) SubmitAppLogs(appID string, lines []models.LogLine) error {
 		}
 	}
 	return t.http.SubmitAppLogs(appID, lines)
+}
+
+func (t *transport) SubmitDiscoveryLogs(discoveryID string, lines []models.LogLine) error {
+	if t.ws != nil && t.ws.Connected() {
+		if err := t.ws.SubmitDiscoveryLogs(discoveryID, lines); err == nil {
+			return nil
+		}
+	}
+	return t.http.SubmitDiscoveryLogs(discoveryID, lines)
 }
 
 // SubmitDBLogs ships over HTTP (the browser receives them via SSE regardless of
@@ -263,6 +273,7 @@ func processHeartbeat(client *api.Client, sink commandSink, metrics map[string]i
 		AgentVersion:      Version,
 		DetectedDatabases: system.DetectedDatabasesWire(),
 		ManagedDBHealth:   system.ManagedDatabaseHealthWire(),
+		DetectedServices:  system.DetectedServicesWire(),
 	})
 	if err != nil {
 		log.Printf("Heartbeat failed: %v", err)
@@ -357,6 +368,42 @@ func dispatchCommand(client commandSink, cmd models.AgentCommand, cfg *config.Co
 			result = executor.ExecuteStreamDBLogs(cmd.Payload, func(lines []models.LogLine) error {
 				return client.SubmitDBLogs(dbID, lines)
 			})
+		case "STREAM_DISC_LOGS":
+			discoveryID, _ := cmd.Payload["discovery_id"].(string)
+			// Need to convert cmd.Payload to StreamDiscoveryLogsPayload
+			payload := models.StreamDiscoveryLogsPayload{
+				DiscoveryID: discoveryID,
+			}
+			if source, ok := cmd.Payload["source"].(string); ok {
+				payload.Source = source
+			}
+			if containerName, ok := cmd.Payload["container_name"].(string); ok {
+				payload.ContainerName = containerName
+			}
+			if unitName, ok := cmd.Payload["unit_name"].(string); ok {
+				payload.UnitName = unitName
+			}
+			if tailF, ok := cmd.Payload["tail"].(float64); ok {
+				payload.Tail = int(tailF)
+			}
+			if durF, ok := cmd.Payload["duration_seconds"].(float64); ok {
+				payload.DurationSeconds = int(durF)
+			}
+			
+			// StreamDiscoveryLogs doesn't return a CommandResultRequest directly because it blocks
+			// until duration/context is over. Execute commands return standard results.
+			// Let's create an adapter inline.
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			
+			err := executor.StreamDiscoveryLogs(ctx, payload, func(lines []models.LogLine) error {
+				return client.SubmitDiscoveryLogs(discoveryID, lines)
+			})
+			if err != nil {
+				result = models.CommandResultRequest{ExitCode: 1, Stderr: err.Error()}
+			} else {
+				result = models.CommandResultRequest{ExitCode: 0}
+			}
 		default:
 			result = models.CommandResultRequest{
 				ExitCode: 1,

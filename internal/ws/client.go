@@ -35,6 +35,7 @@ type envelope struct {
 	Command       *models.AgentCommand         `json:"command,omitempty"`
 	CommandID     string                       `json:"command_id,omitempty"`
 	ApplicationID string                       `json:"application_id,omitempty"`
+	DiscoveryID   string                       `json:"discovery_id,omitempty"`
 	Result        *models.CommandResultRequest `json:"result,omitempty"`
 	Lines         []models.LogLine             `json:"lines,omitempty"`
 	AgentVersion  string                       `json:"agent_version,omitempty"`
@@ -194,6 +195,10 @@ func (c *Client) SubmitLogs(commandID string, lines []models.LogLine) error {
 
 func (c *Client) SubmitAppLogs(applicationID string, lines []models.LogLine) error {
 	return c.Send(envelope{Type: "app_logs", ApplicationID: applicationID, Lines: lines})
+}
+
+func (c *Client) SubmitDiscoveryLogs(discoveryID string, lines []models.LogLine) error {
+	return c.Send(envelope{Type: "discovery_logs", DiscoveryID: discoveryID, Lines: lines})
 }
 
 // backoff: exponential with jitter, capped. attempt 1 → ~1s, 2 → ~2s, 3 → ~4s…

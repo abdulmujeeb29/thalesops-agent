@@ -145,3 +145,20 @@ func (c *Client) SubmitDBLogs(databaseID string, lines []models.LogLine) error {
 	}
 	return nil
 }
+
+func (c *Client) SubmitDiscoveryLogs(discoveryID string, lines []models.LogLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	resp, err := c.doRequest("POST", "/api/v1/agent/discovery-logs/",
+		models.DiscoveryLogBatch{DiscoveryID: discoveryID, Logs: lines})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("submitting discovery logs failed with status: %d", resp.StatusCode)
+	}
+	return nil
+}
