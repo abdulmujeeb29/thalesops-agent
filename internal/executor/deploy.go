@@ -182,6 +182,9 @@ func runContainer(ctx context.Context, sh *LogShipper, appSlug, image string, po
 	}
 
 	runArgs := []string{"run", "-d", "--name", container, "--restart", "unless-stopped"}
+	// Mark this as a ThalesOps-managed app container so service discovery excludes
+	// it from "External Deployments" (detect.go skips containers carrying this label).
+	runArgs = append(runArgs, "--label", "thalesops.app="+appSlug)
 	runArgs = append(runArgs, hostGatewayArgs()...)
 	if envFile != "" {
 		runArgs = append(runArgs, "--env-file", envFile)
