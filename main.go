@@ -268,12 +268,15 @@ func collectMetrics() map[string]interface{} {
 func processHeartbeat(client *api.Client, sink commandSink, metrics map[string]interface{}, cfg *config.Config) time.Duration {
 	fmt.Printf("Heartbeat: %v\n", metrics)
 
+	discovery := system.Discover()
+
 	resp, err := client.Heartbeat(models.HeartbeatRequest{
 		Metrics:           metrics,
 		AgentVersion:      Version,
 		DetectedDatabases: system.DetectedDatabasesWire(),
 		ManagedDBHealth:   system.ManagedDatabaseHealthWire(),
-		DetectedServices:  system.DetectedServicesWire(),
+		DetectedServices:  discovery.Services,
+		DiscoveryMeta:     discovery.Meta,
 	})
 	if err != nil {
 		log.Printf("Heartbeat failed: %v", err)
@@ -382,6 +385,9 @@ func dispatchCommand(client commandSink, cmd models.AgentCommand, cfg *config.Co
 			}
 			if unitName, ok := cmd.Payload["unit_name"].(string); ok {
 				payload.UnitName = unitName
+			}
+			if name, ok := cmd.Payload["identifier"].(string); ok {
+				payload.DiscoveryName = name
 			}
 			if tailF, ok := cmd.Payload["tail"].(float64); ok {
 				payload.Tail = int(tailF)

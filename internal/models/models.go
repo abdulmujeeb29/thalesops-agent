@@ -14,6 +14,10 @@ type HeartbeatRequest struct {
 	DetectedDatabases []map[string]string    `json:"detected_databases,omitempty"`
 	ManagedDBHealth   []map[string]string    `json:"managed_database_health,omitempty"`
 	DetectedServices  []map[string]interface{} `json:"detected_services,omitempty"`
+	// DiscoveryMeta reports how well the discovery scan itself went, so the
+	// dashboard can say "we're under-reporting, here's why" instead of showing a
+	// convincingly empty page.
+	DiscoveryMeta map[string]interface{} `json:"discovery_meta,omitempty"`
 }
 
 type AgentCommand struct {
@@ -87,9 +91,13 @@ type DiscoveryLogBatch struct {
 
 // StreamDiscoveryLogsPayload is the typed view of a STREAM_DISC_LOGS command's payload.
 type StreamDiscoveryLogsPayload struct {
-	DiscoveryID     string
-	Source          string // "docker" or "systemd"
-	ContainerName   string // docker only
+	DiscoveryID string
+	// Source is DOCKER, PODMAN, SYSTEMD, PM2, SUPERVISOR or PROCESS. Each has its
+	// own way of tailing logs; PROCESS has none (a bare process keeps no log we
+	// can find), so the backend never opens a session for it.
+	DiscoveryName   string // generic identifier — the container/unit/program name
+	Source          string
+	ContainerName   string // docker/podman only
 	UnitName        string // systemd only
 	Tail            int
 	DurationSeconds int
