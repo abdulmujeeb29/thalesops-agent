@@ -371,6 +371,8 @@ func dispatchCommand(client commandSink, cmd models.AgentCommand, cfg *config.Co
 			result = executor.ExecuteStreamDBLogs(cmd.Payload, func(lines []models.LogLine) error {
 				return client.SubmitDBLogs(dbID, lines)
 			})
+		case "INSPECT_DISC":
+			result = executor.ExecuteInspectDiscovery(cmd.Payload)
 		case "STREAM_DISC_LOGS":
 			discoveryID, _ := cmd.Payload["discovery_id"].(string)
 			// Need to convert cmd.Payload to StreamDiscoveryLogsPayload

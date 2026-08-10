@@ -103,6 +103,37 @@ type StreamDiscoveryLogsPayload struct {
 	DurationSeconds int
 }
 
+// GitCheckout identifies the repository, branch and exact commit a directory on
+// the server is sitting on.
+type GitCheckout struct {
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+	Commit string `json:"commit"`
+	Dirty  bool   `json:"dirty"`
+}
+
+// DiscoveryInspection is everything needed to recreate an external deployment as
+// a managed application. Returned as the INSPECT_DISC command's stdout.
+type DiscoveryInspection struct {
+	Source        string            `json:"source"`
+	Identifier    string            `json:"identifier"`
+	WorkDir       string            `json:"work_dir,omitempty"`
+	Binary        string            `json:"binary,omitempty"`
+	Command       string            `json:"command,omitempty"`
+	UnitFile      string            `json:"unit_file,omitempty"`
+	Image         string            `json:"image,omitempty"`
+	SourceLabel   string            `json:"source_label,omitempty"`
+	RestartPolicy string            `json:"restart_policy,omitempty"`
+	RunAsUser     string            `json:"run_as_user,omitempty"`
+	Volumes       []string          `json:"volumes,omitempty"`
+	Git           *GitCheckout      `json:"git,omitempty"`
+	Env           map[string]string `json:"env"`
+	// EnvOmitted records that the user did not ask for the environment, so the
+	// backend can tell "no variables" apart from "we didn't look".
+	EnvOmitted bool     `json:"env_omitted,omitempty"`
+	Notes      []string `json:"notes,omitempty"`
+}
+
 // DeployPayload is the typed view of a DEPLOY/RESTART command's payload.
 // Parsed defensively from the generic map the backend sends.
 type DeployPayload struct {
