@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/thalesops/agent/internal/models"
 )
 
@@ -89,6 +90,41 @@ func ExecuteDeleteDB(rawPayload map[string]interface{}, timeout time.Duration, f
 	return models.CommandResultRequest{ExitCode: 0, Stdout: "deleted " + p.ContainerName}
 }
 
+// Memory caps for a managed Redis, in MB: what Docker allows the container, and
+// the lower ceiling Redis enforces on itself.
+const (
+	redisMinCapMB      = 128
+	redisMaxCapMB      = 2048
+	redisFallbackCapMB = 256
+	// Share of host RAM a managed Redis may take. These servers also run the
+	// user's app (and often a database), so a quarter is a fair ceiling.
+	redisHostRAMShare = 0.25
+	// Redis stops accepting writes a little before Docker would kill it, so the
+	// failure is a clear error rather than a vanished container.
+	redisHeadroom = 0.8
+)
+
+// redisMemoryCapsMB sizes the caps from the host's actual RAM, falling back to a
+// conservative fixed value when it can't be read.
+func redisMemoryCapsMB() (dockerCap, redisCap int) {
+	dockerCap = redisFallbackCapMB
+
+	if vm, err := mem.VirtualMemory(); err == nil && vm.Total > 0 {
+		hostMB := int(vm.Total / 1024 / 1024)
+		dockerCap = int(float64(hostMB) * redisHostRAMShare)
+	}
+
+	if dockerCap < redisMinCapMB {
+		dockerCap = redisMinCapMB
+	}
+	if dockerCap > redisMaxCapMB {
+		dockerCap = redisMaxCapMB
+	}
+
+	redisCap = int(float64(dockerCap) * redisHeadroom)
+	return dockerCap, redisCap
+}
+
 // dbRunArgs builds the `docker run` args per engine. Returns the args and the
 // in-container data directory (for reference).
 func dbRunArgs(p models.DatabasePayload) ([]string, string) {
@@ -100,7 +136,27 @@ func dbRunArgs(p models.DatabasePayload) ([]string, string) {
 	image := p.Image + ":" + p.Version
 	switch p.Engine {
 	case "REDIS":
-		return append(base, "-v", p.VolumeName+":/data", image), "/data"
+		// Redis has no memory ceiling of its own: left alone it grows until the
+		// host runs out and the OOM killer picks a victim — which may well be the
+		// user's app rather than Redis. So we cap it twice: `--memory` stops the
+		// container starving its neighbours, and `--maxmemory` (set lower) makes
+		// Redis stop first, so it fails on its own terms instead of being killed.
+		dockerCap, redisCap := redisMemoryCapsMB()
+		args := append(base,
+			"--memory", fmt.Sprintf("%dm", dockerCap),
+			"-v", p.VolumeName+":/data", image,
+			// Passing args replaces the image's CMD, so name the server explicitly.
+			"redis-server",
+			"--maxmemory", fmt.Sprintf("%dmb", redisCap),
+			// noeviction, NOT allkeys-lru: we can't know whether this Redis is a
+			// cache or a job queue. Evicting would silently drop queued jobs;
+			// refusing writes is loud and debuggable. A cache user can tune it.
+			"--maxmemory-policy", "noeviction",
+			// Append-only log, so a crash doesn't lose up to an hour of writes the
+			// way periodic RDB snapshots alone would. Lands on the mounted volume.
+			"--appendonly", "yes",
+		)
+		return args, "/data"
 	case "MYSQL":
 		return append(base,
 			"-e", "MYSQL_ROOT_PASSWORD="+p.DBPassword,
