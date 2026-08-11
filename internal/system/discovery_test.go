@@ -153,7 +153,7 @@ func TestOperatorInstalledUnitPaths(t *testing.T) {
 func TestSystemdSkipList(t *testing.T) {
 	for _, unit := range []string{
 		"systemd-resolved.service", "user@1000.service", "ssh.service",
-		"docker.service", "containerd.service", "thalesops.service", "snap.foo.service",
+		"docker.service", "containerd.service", "thalesops-agent.service", "snap.foo.service",
 	} {
 		if !systemdSkip(unit) {
 			t.Errorf("%s should be skipped", unit)
@@ -168,6 +168,21 @@ func TestSystemdSkipList(t *testing.T) {
 		if systemdSkip(unit) {
 			t.Errorf("%s should NOT be skipped", unit)
 		}
+	}
+}
+
+// Regression: skipping "thalesops*" by prefix hid a user's own app running as
+// thalesops.service, while nginx/postgres/redis on the same box showed fine.
+// Only the agent's own unit may be filtered, and only by exact name.
+func TestUserAppNamedThalesopsIsNotSkipped(t *testing.T) {
+	if systemdSkip("thalesops.service") {
+		t.Error("thalesops.service is a user's application and must be discovered")
+	}
+	if systemdSkip("thalesops-web.service") {
+		t.Error("only the agent's own unit may be skipped")
+	}
+	if !systemdSkip("thalesops-agent.service") {
+		t.Error("the agent's own unit should still be skipped")
 	}
 }
 

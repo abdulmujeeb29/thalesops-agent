@@ -350,9 +350,13 @@ func containerStatus(state, statusStr string) string {
 // ---------------------------------------------------------------------------
 
 // Unit families that are never a user's deployment. Prefix matches.
+//
+// Deliberately NOT "thalesops" — that prefix would also hide a user's own app
+// running as thalesops.service. Only this agent's own unit is skipped, by exact
+// name, in systemdSkipExact below.
 var systemdSkipPrefixes = []string{
 	"systemd-", "user@", "user-runtime-dir@", "session-", "getty@", "serial-getty@",
-	"snap.", "thalesops",
+	"snap.",
 }
 
 // Distro daemons that listen on ports but aren't deployments. Exact matches, so
@@ -379,6 +383,9 @@ var systemdSkipExact = map[string]bool{
 	// app listening on every container's port.
 	"docker.service": true, "containerd.service": true, "podman.service": true,
 	"cri-docker.service": true,
+	// This agent itself (see install.sh SERVICE_NAME). Matched exactly, never by
+	// prefix — a user's own app may legitimately be called thalesops.service.
+	"thalesops-agent.service": true,
 }
 
 func systemdSkip(unit string) bool {
