@@ -25,4 +25,4 @@ echo "$VERSION" > build/releases/version.txt
 # Copy the install script
 cp install.sh build/install.sh
 
-echo "Build complete! Upload the contents of the 'build/' folder to your staging-agent.com server."
+echo "Build complete! Upload the contents of the 'build/' folder to your agent.thalesops.com server."

@@ -4,13 +4,13 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 # ThalesOps Agent Installer
 # Usage:
-#   curl -fsSL https://staging-agent.thalesops.com/install.sh | \
+#   curl -fsSL https://agent.thalesops.com/install.sh | \
 #     THALES_TOKEN=tc_agt_xxx \
 #     THALES_SERVER_ID=uuid \
-#     THALES_BACKEND_URL=https://staging.thalesops.com bash
+#     THALES_BACKEND_URL=https://www.thalesops.com bash
 # -----------------------------------------------------------------------------
 
-AGENT_BASE_URL="https://staging-agent.thalesops.com"
+AGENT_BASE_URL="https://agent.thalesops.com"
 INSTALL_BIN="/usr/local/bin/thalesops-agent"
 ENV_DIR="/etc/thalesops"
 SERVICE_NAME="thalesops-agent"
