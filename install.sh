@@ -201,6 +201,18 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" --quiet
 systemctl restart "$SERVICE_NAME"
 
+# `restart` returning 0 only means systemd accepted the request — it says
+# nothing about whether the process actually stayed up (e.g. a bad binary
+# crash-loops but `restart` still "succeeds"). Verify before claiming success.
+sleep 3
+if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+  echo ""
+  echo -e "${RED}[ThalesOps] ERROR:${NC} Agent failed to start. Last logs:"
+  journalctl -u "$SERVICE_NAME" -n 20 --no-pager
+  echo ""
+  error "Install did not complete — the agent is not running. See logs above (or re-check with: journalctl -u $SERVICE_NAME -f)."
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 info "Agent installed and started successfully!"

@@ -11,13 +11,18 @@ LDFLAGS="-X main.Version=${VERSION}"
 # Create a releases directory
 mkdir -p build/releases
 
+# CGO_ENABLED=0 → fully static binaries, no glibc dependency at all. Without
+# this, building amd64 on an amd64 CI runner defaults to CGO_ENABLED=1 and
+# dynamically links against whatever glibc that runner happens to ship,
+# which breaks on any server with an older glibc (e.g. Ubuntu 20.04).
+
 # Build for x86_64 (amd64)
 echo "Building for Linux amd64..."
-GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o build/releases/thalesops-agent-linux-amd64 main.go
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o build/releases/thalesops-agent-linux-amd64 main.go
 
 # Build for ARM64
 echo "Building for Linux arm64..."
-GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o build/releases/thalesops-agent-linux-arm64 main.go
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o build/releases/thalesops-agent-linux-arm64 main.go
 
 # Write version file so the server can expose it at /releases/version.txt
 echo "$VERSION" > build/releases/version.txt
